@@ -15,9 +15,16 @@
 
 set -uo pipefail
 
+# 检查 python3 可用性
+if ! command -v python3 &>/dev/null; then
+  echo "❌ python3 不可用，verify_delivery.sh 无法执行"
+  exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(dirname "$SCRIPT_DIR")"
 STATE_DIR="$SKILL_DIR/state"
+mkdir -p "$STATE_DIR"
 
 # ─── 参数解析 ───
 PROJECT_DIR=""
@@ -47,11 +54,55 @@ PASS_COUNT=0
 FAIL_COUNT=0
 WARN_COUNT=0
 
-log_pass() { echo "  ✅ $1"; ((PASS_COUNT++)); }
-log_fail() { echo "  ❌ $1"; ((FAIL_COUNT++)); }
-log_warn() { echo "  ⚠️  $1"; ((WARN_COUNT++)); }
+log_pass() { echo "  ✅ $1"; ((PASS_COUNT++)) || true; }
+log_fail() { echo "  ❌ $1"; ((FAIL_COUNT++)) || true; }
+log_warn() { echo "  ⚠️  $1"; ((WARN_COUNT++)) || true; }
 
-{
+# ─── 测试命令白名单校验 ───
+validate_test_cmd() {
+  local cmd="$1"
+  # 允许的测试命令前缀白名单
+  local -a ALLOWED_PREFIXES=(
+    "python3 -m pytest"
+    "python -m pytest"
+    "pytest"
+    "npm test"
+    "npm run test"
+    "npx jest"
+    "npx vitest"
+    "go test"
+    "cargo test"
+    "make test"
+    "gradle test"
+    "mvn test"
+    "dotnet test"
+    "ruby -e"
+    "python3 -c"
+    "node -e"
+    "curl -sf"
+    "curl -s"
+    "wget -q"
+    "ls "
+    "cat "
+    "test "
+    "[ "
+  )
+  for prefix in "${ALLOWED_PREFIXES[@]}"; do
+    if [[ "$cmd" == "$prefix"* ]]; then
+      return 0
+    fi
+  done
+  # 拒绝危险命令
+  if echo "$cmd" | grep -qE '(rm |dd |mkfs|chmod 777|eval |exec |>|>>|\||;|&&|\$\()'; then
+    return 1
+  fi
+  # 未识别的命令，也拒绝
+  return 1
+}
+
+# ─── 将所有输出写入报告文件（不使用管道，避免子shell问题） ───
+exec > >(tee "$REPORT_FILE") 2>&1
+
 echo "# 验证报告：${TASK_ID}"
 echo "**时间**：$(date -Iseconds)"
 echo "**项目**：${PROJECT_DIR}"
@@ -125,7 +176,6 @@ if [[ -n "$CLAIMED_FILES" ]]; then
     [[ "$f" == /* ]] && FULL_PATH="$f"
     if [[ -f "$FULL_PATH" ]]; then
       FILE_SIZE=$(stat -c%s "$FULL_PATH" 2>/dev/null || stat -f%z "$FULL_PATH" 2>/dev/null || echo 0)
-      FILE_MTIME=$(stat -c%Y "$FULL_PATH" 2>/dev/null || stat -f%m "$FULL_PATH" 2>/dev/null || echo 0)
       log_pass "$f （${FILE_SIZE} bytes）"
     else
       log_fail "$f 不存在！"
@@ -182,18 +232,22 @@ echo ""
 echo "## 5. 测试验证"
 
 if [[ -n "$TEST_CMD" ]]; then
-  echo "  执行测试命令: $TEST_CMD"
-  echo "  ─────────────"
-  set +e
-  TEST_OUTPUT=$(cd "$PROJECT_DIR" && eval "$TEST_CMD" 2>&1)
-  TEST_EXIT=$?
-  set -e
-  echo "$TEST_OUTPUT" | tail -30 | sed 's/^/  /'
-  echo "  ─────────────"
-  if [[ $TEST_EXIT -eq 0 ]]; then
-    log_pass "测试通过（退出码 0）"
+  if validate_test_cmd "$TEST_CMD"; then
+    echo "  执行测试命令: $TEST_CMD"
+    echo "  ─────────────"
+    set +e
+    TEST_OUTPUT=$(cd "$PROJECT_DIR" && eval "$TEST_CMD" 2>&1)
+    TEST_EXIT=$?
+    set -e
+    echo "$TEST_OUTPUT" | tail -30 | sed 's/^/  /'
+    echo "  ─────────────"
+    if [[ $TEST_EXIT -eq 0 ]]; then
+      log_pass "测试通过（退出码 0）"
+    else
+      log_fail "测试失败（退出码 $TEST_EXIT）"
+    fi
   else
-    log_fail "测试失败（退出码 $TEST_EXIT）"
+    log_fail "测试命令未通过白名单校验，拒绝执行: $TEST_CMD"
   fi
 else
   # 自动检测测试框架
@@ -233,38 +287,39 @@ echo ""
 # ─── 检查 6：自动验收命令 ───
 echo "## 6. 自动验收命令"
 
-# 从任务简报中提取验收命令
-BRIEF_FILE="$STATE_DIR/${TASK_ID}_output.txt"
 if [[ -n "$ACCEPTANCE_CMDS" && -f "$ACCEPTANCE_CMDS" ]]; then
   echo "  执行验收命令文件: $ACCEPTANCE_CMDS"
   while IFS= read -r cmd; do
     cmd=$(echo "$cmd" | xargs)
     [[ -z "$cmd" || "$cmd" == "#"* ]] && continue
-    echo "  > $cmd"
-    set +e
-    CMD_OUTPUT=$(cd "$PROJECT_DIR" && eval "$cmd" 2>&1)
-    CMD_EXIT=$?
-    set -e
-    if [[ $CMD_EXIT -eq 0 ]]; then
-      log_pass "验收通过: $cmd"
+    if validate_test_cmd "$cmd"; then
+      echo "  > $cmd"
+      set +e
+      CMD_OUTPUT=$(cd "$PROJECT_DIR" && eval "$cmd" 2>&1)
+      CMD_EXIT=$?
+      set -e
+      if [[ $CMD_EXIT -eq 0 ]]; then
+        log_pass "验收通过: $cmd"
+      else
+        log_fail "验收失败: $cmd"
+        echo "$CMD_OUTPUT" | tail -5 | sed 's/^/    /'
+      fi
     else
-      log_fail "验收失败: $cmd"
-      echo "$CMD_OUTPUT" | tail -5 | sed 's/^/    /'
+      log_fail "验收命令未通过白名单校验: $cmd"
     fi
   done < "$ACCEPTANCE_CMDS"
 else
   # 尝试从任务简报中自动提取验收命令（bash 代码块内容）
   TASK_BRIEF_FILE=$(find "$STATE_DIR" -name "${TASK_ID}*.md" -path "*/task_brief*" 2>/dev/null | head -1 || true)
   if [[ -z "$TASK_BRIEF_FILE" ]]; then
-    # 也检查 state 目录下有没有原始 brief
     TASK_BRIEF_FILE=$(find "$STATE_DIR" -name "*brief*" -newer "$STATE_DIR/active_task.json" 2>/dev/null | head -1 || true)
   fi
 
   if [[ -n "$TASK_BRIEF_FILE" && -f "$TASK_BRIEF_FILE" ]]; then
-    # 提取 ```bash 代码块中的验收命令
+    # 安全提取 bash 代码块中的验收命令（通过 stdin 传递文件内容，避免路径注入）
     EXTRACTED_CMDS=$(python3 -c "
-import re
-content = open('$TASK_BRIEF_FILE').read()
+import re, sys
+content = sys.stdin.read()
 # 找 '验收命令' 或 'acceptance' 后面的 bash 代码块
 pattern = r'(?:验收命令|acceptance|验收标准.*?)\n+\`\`\`(?:bash)?\n(.*?)\`\`\`'
 matches = re.findall(pattern, content, re.DOTALL | re.IGNORECASE)
@@ -273,22 +328,26 @@ for m in matches:
         line = line.strip()
         if line and not line.startswith('#'):
             print(line)
-" 2>/dev/null || true)
+" < "$TASK_BRIEF_FILE" 2>/dev/null || true)
 
     if [[ -n "$EXTRACTED_CMDS" ]]; then
       echo "  从任务简报中提取到验收命令："
       while IFS= read -r cmd; do
         [[ -z "$cmd" ]] && continue
-        echo "  > $cmd"
-        set +e
-        CMD_OUTPUT=$(cd "$PROJECT_DIR" && eval "$cmd" 2>&1)
-        CMD_EXIT=$?
-        set -e
-        if [[ $CMD_EXIT -eq 0 ]]; then
-          log_pass "验收通过: $cmd"
+        if validate_test_cmd "$cmd"; then
+          echo "  > $cmd"
+          set +e
+          CMD_OUTPUT=$(cd "$PROJECT_DIR" && eval "$cmd" 2>&1)
+          CMD_EXIT=$?
+          set -e
+          if [[ $CMD_EXIT -eq 0 ]]; then
+            log_pass "验收通过: $cmd"
+          else
+            log_fail "验收失败: $cmd"
+            echo "$CMD_OUTPUT" | tail -5 | sed 's/^/    /'
+          fi
         else
-          log_fail "验收失败: $cmd"
-          echo "$CMD_OUTPUT" | tail -5 | sed 's/^/    /'
+          log_fail "验收命令未通过白名单校验: $cmd"
         fi
       done <<< "$EXTRACTED_CMDS"
     else
@@ -353,12 +412,13 @@ else
   echo "📋 失败反馈已包含在报告中，可直接作为续接任务简报的输入。"
 fi
 
-} 2>&1 | tee "$REPORT_FILE"
+# 关闭 tee 重定向
+exec > /dev/tty 2>&1
 
 echo ""
 echo "📄 完整报告已保存到: $REPORT_FILE"
 
-# 退出码
+# 退出码（现在 FAIL_COUNT 在主进程中，不再是子shell）
 if [[ $FAIL_COUNT -gt 0 ]]; then
   exit 1
 else

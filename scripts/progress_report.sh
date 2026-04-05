@@ -11,9 +11,15 @@
 
 set -uo pipefail
 
+if ! command -v python3 &>/dev/null; then
+  echo "❌ python3 不可用"
+  exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(dirname "$SCRIPT_DIR")"
 STATE_DIR="$SKILL_DIR/state"
+mkdir -p "$STATE_DIR"
 
 PROJECT_DIR=""
 TASK_ID=""

@@ -12,6 +12,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(dirname "$SCRIPT_DIR")"
 STATE_DIR="$SKILL_DIR/state"
+mkdir -p "$STATE_DIR"
 INTERVAL=30  # 每 30 秒检查一次
 
 PROJECT_DIR=""
@@ -42,24 +43,30 @@ log_progress() {
   timestamp=$(date '+%H:%M:%S')
   echo "[$timestamp] $msg" >> "$MONITOR_LOG"
 
-  # 更新进度 JSON
+  # 安全更新进度 JSON（通过 sys.argv 传递数据，避免注入）
   python3 -c "
-import json
+import json, sys
+
+progress_file = sys.argv[1]
+timestamp = sys.argv[2]
+msg = sys.argv[3]
+iso_time = sys.argv[4]
+
 try:
-    with open('$PROGRESS_FILE') as f:
+    with open(progress_file) as f:
         data = json.load(f)
 except:
     data = {'status':'running','checks':[],'last_update':''}
 
-data['checks'].append({'time':'$timestamp','msg':'''$msg'''})
-data['last_update'] = '$(date -Iseconds)'
+data['checks'].append({'time': timestamp, 'msg': msg})
+data['last_update'] = iso_time
 
 # 只保留最近 50 条
 data['checks'] = data['checks'][-50:]
 
-with open('$PROGRESS_FILE','w') as f:
+with open(progress_file, 'w') as f:
     json.dump(data, f, ensure_ascii=False, indent=2)
-" 2>/dev/null || true
+" "$PROGRESS_FILE" "$timestamp" "$msg" "$(date -Iseconds)" 2>/dev/null || true
 }
 
 log_progress "监控启动 | 项目: $PROJECT_DIR | 任务: $TASK_ID"
@@ -71,19 +78,22 @@ while true; do
   sleep "$INTERVAL"
 
   # 检查 Claude Code 是否还在跑
-  if ! pgrep -af "claude.*-p" >/dev/null 2>&1; then
+  if ! pgrep -x "claude" >/dev/null 2>&1; then
     # 也检查 lock.pid
     if [[ -f "$STATE_DIR/lock.pid" ]]; then
       LOCK_PID=$(cat "$STATE_DIR/lock.pid")
       if ! kill -0 "$LOCK_PID" 2>/dev/null; then
         log_progress "Claude Code 进程已结束"
-        # 更新状态
+        # 安全更新状态
         python3 -c "
-import json
-with open('$PROGRESS_FILE') as f: data = json.load(f)
-data['status'] = 'completed'
-with open('$PROGRESS_FILE','w') as f: json.dump(data, f, ensure_ascii=False, indent=2)
-" 2>/dev/null || true
+import json, sys
+pf = sys.argv[1]
+try:
+    with open(pf) as f: data = json.load(f)
+    data['status'] = 'completed'
+    with open(pf, 'w') as f: json.dump(data, f, ensure_ascii=False, indent=2)
+except: pass
+" "$PROGRESS_FILE" 2>/dev/null || true
         break
       fi
     else

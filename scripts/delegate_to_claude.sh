@@ -29,10 +29,40 @@
 
 set -euo pipefail
 
+# 检查 python3 可用性
+if ! command -v python3 &>/dev/null; then
+  echo "❌ python3 不可用，delegate_to_claude.sh 无法执行"
+  exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(dirname "$SCRIPT_DIR")"
 STATE_DIR="$SKILL_DIR/state"
-CLAUDE_BIN="${CLAUDE_BIN:-/root/.nvm/versions/node/v22.22.2/bin/claude}"
+mkdir -p "$STATE_DIR"
+
+# 动态查找 claude 可执行文件（H-07: 不再硬编码 nvm 版本号）
+if [[ -n "${CLAUDE_BIN:-}" ]] && [[ -x "$CLAUDE_BIN" ]]; then
+  : # 用户显式指定且可执行
+elif command -v claude &>/dev/null; then
+  CLAUDE_BIN="$(command -v claude)"
+else
+  # fallback: 搜索常见位置
+  for candidate in \
+    "$HOME/.nvm/versions/node"/*/bin/claude \
+    /usr/local/bin/claude \
+    /usr/bin/claude; do
+    if [[ -x "$candidate" ]]; then
+      CLAUDE_BIN="$candidate"
+      break
+    fi
+  done
+fi
+
+if [[ -z "${CLAUDE_BIN:-}" ]] || [[ ! -x "${CLAUDE_BIN:-}" ]]; then
+  echo "❌ 找不到 claude 可执行文件。请设置 CLAUDE_BIN 环境变量"
+  exit 1
+fi
+
 CALL_LOG="$STATE_DIR/call_log.jsonl"
 DEFAULT_TIMEOUT=1800  # 30 分钟（大任务需要更多时间）
 
@@ -192,8 +222,10 @@ ${BRIEF_CONTENT}
 {如有}
 \`\`\`"
 
-# ─── 写入任务锁 ───
-echo $$ > "$STATE_DIR/lock.pid"
+# ─── 写入任务锁（前台模式在此写入，后台模式在子shell内写入） ───
+if [[ "$BACKGROUND" != "true" ]]; then
+  echo $$ > "$STATE_DIR/lock.pid"
+fi
 echo "{\"task_id\": \"$TASK_ID\", \"started_at\": \"$(date -Iseconds)\", \"pid\": $$}" > "$STATE_DIR/active_task.json"
 
 # ─── 实际执行函数（前台和后台共用） ───
@@ -246,20 +278,21 @@ LOGEOF
   # ─── 环境快照（后） ───
   "$SCRIPT_DIR/env_snapshot.sh" --after --project-dir "$PROJECT_DIR" --task-id "$TASK_ID" 2>/dev/null || true
 
-  # ─── 写入完成标记 ───
-  echo "{\"task_id\":\"$TASK_ID\",\"completed_at\":\"$(date -Iseconds)\",\"exit_code\":$EXIT_CODE,\"duration\":$DURATION,\"files_changed\":$FILES_CHANGED}" > "$STATE_DIR/${TASK_ID}_done.json"
-
-  # ─── 超时/失败处理 ───
+  # ─── 超时/失败处理 + 写入完成标记 ───
   if [[ $EXIT_CODE -eq 124 ]]; then
     echo "⏰ Claude Code 调用超时（${TIMEOUT}s）" >> "$STDERR_FILE"
-    # 超时不等于全部失败 — 可能已完成大部分工作
-    # 分析半成品状态
     echo "📊 分析超时后的半成品状态..."
     local TIMEOUT_CHANGES=$(cd "$PROJECT_DIR" && git diff --stat HEAD 2>/dev/null | tail -1 || echo "无法统计")
     echo "   变更统计: $TIMEOUT_CHANGES" >> "$STDERR_FILE"
-    echo "{\"event\":\"timeout\",\"task_id\":\"$TASK_ID\",\"partial_changes\":\"$TIMEOUT_CHANGES\"}" >> "$STATE_DIR/${TASK_ID}_done.json"
+    # H-05 修复：超时场景写入合并的单个 JSON 对象（不再用 >> 追加）
+    echo "{\"task_id\":\"$TASK_ID\",\"completed_at\":\"$(date -Iseconds)\",\"exit_code\":$EXIT_CODE,\"duration\":$DURATION,\"files_changed\":$FILES_CHANGED,\"event\":\"timeout\",\"partial_changes\":\"$TIMEOUT_CHANGES\"}" > "$STATE_DIR/${TASK_ID}_done.json"
     return 4
-  elif [[ $EXIT_CODE -ne 0 ]]; then
+  else
+    # 正常完成或失败，写入完成标记
+    echo "{\"task_id\":\"$TASK_ID\",\"completed_at\":\"$(date -Iseconds)\",\"exit_code\":$EXIT_CODE,\"duration\":$DURATION,\"files_changed\":$FILES_CHANGED}" > "$STATE_DIR/${TASK_ID}_done.json"
+  fi
+
+  if [[ $EXIT_CODE -ne 0 && $EXIT_CODE -ne 124 ]]; then
     echo "❌ Claude Code 调用失败（退出码: $EXIT_CODE）" >> "$STDERR_FILE"
     return 3
   fi
@@ -289,8 +322,11 @@ if [[ "$BACKGROUND" == "true" ]]; then
   echo "   任务ID: $TASK_ID"
   echo "   超时: ${TIMEOUT}s"
 
-  # 在后台执行
+  # 在后台执行（H-02 修复：在子shell内用 $BASHPID 写入 lock.pid）
+  # L-02 修复：trap 捕获错误并写入状态文件
   (
+    trap 'echo "{\"task_id\":\"'"$TASK_ID"'\",\"error\":\"subshell_crash\",\"exit_code\":\$?,\"time\":\"$(date -Iseconds)\"}" > "'"$STATE_DIR/${TASK_ID}_done.json"'"; rm -f "'"$STATE_DIR/lock.pid"'"' ERR
+    echo "$BASHPID" > "$STATE_DIR/lock.pid"
     run_claude_code
   ) &
   BG_PID=$!

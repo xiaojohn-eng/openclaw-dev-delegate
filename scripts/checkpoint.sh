@@ -12,6 +12,7 @@ set -uo pipefail
 ACTION=""
 PROJECT_DIR=""
 LABEL=""
+FORCE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -20,6 +21,7 @@ while [[ $# -gt 0 ]]; do
     --list)        ACTION="list"; shift ;;
     --project-dir) PROJECT_DIR="$2"; shift 2 ;;
     --label)       LABEL="$2"; shift 2 ;;
+    --force)       FORCE=true; shift ;;
     *) shift ;;
   esac
 done
@@ -61,40 +63,45 @@ case "$ACTION" in
     ;;
 
   rollback)
-    # 找到最近的 checkpoint 提交
-    CHECKPOINT_HASH=$(git log --oneline --all | grep "checkpoint:" | head -1 | awk '{print $1}')
+    # H-03 修复：只搜索当前分支（去掉 --all 避免跨分支选错）
+    CHECKPOINT_HASH=$(git log --oneline | grep "checkpoint:" | head -1 | awk '{print $1}')
 
     if [[ -z "$CHECKPOINT_HASH" ]]; then
-      echo "❌ 未找到 checkpoint 提交，无法回滚"
+      echo "❌ ���找到 checkpoint 提交，无法回滚"
       exit 1
     fi
 
     CHECKPOINT_MSG=$(git log --oneline -1 "$CHECKPOINT_HASH")
-    echo "⚠️  准备回滚到: $CHECKPOINT_MSG"
+    echo "⚠️  准备���滚到: $CHECKPOINT_MSG"
     echo "   当前 HEAD: $(git log --oneline -1 HEAD)"
     echo ""
 
     # 显示将要丢弃的变更
     CHANGES=$(git diff --stat "$CHECKPOINT_HASH" HEAD 2>/dev/null || echo "无法计算差异")
-    echo "将要丢弃的变更："
+    echo "��要丢弃的变更："
     echo "$CHANGES"
     echo ""
 
-    # 执行回滚
-    git reset --hard "$CHECKPOINT_HASH"
-    echo "✅ 已回滚到: $CHECKPOINT_MSG"
+    # L-01 修复：需要 --force 标志才执行回滚，否则只显示信息
+    if [[ "${FORCE:-}" == "true" ]]; then
+      git reset --hard "$CHECKPOINT_HASH"
+      echo "✅ 已回��到: $CHECKPOINT_MSG"
+    else
+      echo "⚠️  这是不可逆操作。添加 --force 参数确认执行回滚："
+      echo "   $0 --rollback --project-dir $PROJECT_DIR --force"
+    fi
     ;;
 
   list)
-    echo "📋 Checkpoint 列表："
-    git log --oneline --all | grep "checkpoint:" | head -20 | while IFS= read -r line; do
+    echo "📋 Checkpoint 列表（当前分支）："
+    git log --oneline | grep "checkpoint:" | head -20 | while IFS= read -r line; do
       HASH=$(echo "$line" | awk '{print $1}')
       MSG=$(echo "$line" | cut -d' ' -f2-)
       DATE=$(git log -1 --format="%ci" "$HASH" 2>/dev/null | cut -d' ' -f1,2)
       echo "  $HASH | $DATE | $MSG"
     done
 
-    TOTAL=$(git log --oneline --all | grep -c "checkpoint:" || echo 0)
+    TOTAL=$(git log --oneline | grep -c "checkpoint:" || echo 0)
     echo ""
     echo "共 $TOTAL 个快照"
     ;;

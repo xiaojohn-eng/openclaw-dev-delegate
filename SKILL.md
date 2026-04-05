@@ -281,14 +281,14 @@ claude -p \
 ### Git Checkpoint
 - 每次调 Claude Code 前：自动 `git commit` 做快照
 - Claude Code 完成后验证失败 → 可回滚到快照
-- 回滚命令：`git reset --hard HEAD~1`
-- 回滚前必须通知用户
+- 回滚命令：`checkpoint.sh --rollback --project-dir DIR --force`
+- 不带 `--force` 只显示回滚预览，不执行
 
 ### 崩溃断点续接（crash_recover.sh）
 当 Claude Code 中途崩溃（超时/被 kill/网络断）时：
 
 1. **不要立即回滚** — 可能已完成 80% 的工作
-2. 执行 `crash_recover.sh` 分析半成品状态
+2. 执行 `crash_recover.sh` 分析半成品状态（退出码: 0=KEEP, 1=ROLLBACK, 2=RETRY, 3=KEEP_AND_FIX）
 3. 脚本会自动：
    - 对比 checkpoint 和当前状态，计算已完成的文件数
    - 跑测试看半成品是否可用
@@ -364,7 +364,7 @@ OpenClaw 下次进入同一项目时，应先读取此文件了解上下文，
 
 ## 多项目并行
 
-- 最多同时 2 个开发任务
+- 最多同时 1 个开发任务（subscription_guard.sh 强制执行）
 - 每个任务用独立 git 分支隔离
 - 用户切话题时：保存当前任务状态，不终止后台 Claude Code 会话
 - 切回时：从 .dev-delegate-status.md 恢复上下文

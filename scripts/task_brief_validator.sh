@@ -11,6 +11,12 @@
 
 set -uo pipefail
 
+# 检查 python3 可用性
+if ! command -v python3 &>/dev/null; then
+  echo "❌ python3 不可用，task_brief_validator.sh 无法执行"
+  exit 1
+fi
+
 BRIEF_FILE="${1:-}"
 
 if [[ -z "$BRIEF_FILE" || ! -f "$BRIEF_FILE" ]]; then
@@ -18,7 +24,6 @@ if [[ -z "$BRIEF_FILE" || ! -f "$BRIEF_FILE" ]]; then
   exit 1
 fi
 
-CONTENT=$(cat "$BRIEF_FILE")
 MIN_CHARS=20  # 每个字段至少 20 个字符
 
 REQUIRED_SECTIONS=(
@@ -38,14 +43,15 @@ echo "🔍 校验任务简报: $BRIEF_FILE"
 echo ""
 
 for section in "${REQUIRED_SECTIONS[@]}"; do
-  # 提取该 section 的内容（从 ## 标题到下一个 ## 或文件结尾）
+  # 安全方式：通过 stdin 传递文件内容，通过 sys.argv 传递 section 名
   SECTION_CONTENT=$(python3 -c "
 import re, sys
 
-content = '''$( echo "$CONTENT" | sed "s/'/\\\\'/g" )'''
+content = sys.stdin.read()
+section = sys.argv[1]
 
 # 匹配 ## 背景 或 ### 背景 或 **背景** 等格式
-pattern = r'(?:^#{1,4}\s*(?:\d+[\.\)]\s*)?$section|^\*\*$section\*\*)'
+pattern = r'(?:^#{1,4}\s*(?:\d+[\.\)]\s*)?' + re.escape(section) + r'|^\*\*' + re.escape(section) + r'\*\*)'
 matches = list(re.finditer(pattern, content, re.MULTILINE))
 
 if not matches:
@@ -62,39 +68,47 @@ else:
 
 section_text = content[start:end].strip()
 print(section_text)
-" 2>/dev/null || echo "")
+" "$section" < "$BRIEF_FILE" 2>/dev/null || echo "")
 
   CHAR_COUNT=${#SECTION_CONTENT}
 
   if [[ $CHAR_COUNT -lt $MIN_CHARS ]]; then
-    ((FAIL_COUNT++))
+    ((FAIL_COUNT++)) || true
     if [[ $CHAR_COUNT -eq 0 ]]; then
       ISSUES="${ISSUES}\n  ❌ 「${section}」 — 缺失"
     else
       ISSUES="${ISSUES}\n  ❌ 「${section}」 — 内容过少（${CHAR_COUNT} 字 < ${MIN_CHARS} 字最低要求）"
     fi
   else
-    ((PASS_COUNT++))
+    ((PASS_COUNT++)) || true
     echo "  ✅ 「${section}」 — ${CHAR_COUNT} 字"
   fi
 done
 
 echo ""
 
-# 额外检查：文件路径
-if echo "$CONTENT" | grep -qP '/\w+/\w+' 2>/dev/null; then
+# 额外检查：文件路径（使用 grep -E 替代 grep -P 以提高兼容性）
+if grep -qE '/[a-zA-Z0-9_]+/[a-zA-Z0-9_]+' "$BRIEF_FILE" 2>/dev/null; then
   echo "  ✅ 包含文件路径引用"
-  ((PASS_COUNT++))
+  ((PASS_COUNT++)) || true
 else
   echo "  ⚠️  未发现文件路径引用（建议在「输入」和「输出」中列出具体路径）"
 fi
 
 # 额外检查：验收标准
-if echo "$CONTENT" | grep -qiP '验收|完成标准|done.when|acceptance' 2>/dev/null; then
+if grep -qiE '验收|完成标准|done.when|acceptance' "$BRIEF_FILE" 2>/dev/null; then
   echo "  ✅ 包含验收标准描述"
-  ((PASS_COUNT++))
+  ((PASS_COUNT++)) || true
 else
   echo "  ⚠️  未发现明确的验收标准（建议在「目标」中量化）"
+fi
+
+# 额外检查：自动验收命令（可选加分项）
+if grep -qE '验收命令|```bash' "$BRIEF_FILE" 2>/dev/null; then
+  echo "  ✅ 包含自动验收命令"
+  ((PASS_COUNT++)) || true
+else
+  echo "  ⚠️  未包含自动验收命令（建议添加，verify_delivery.sh 会自动执行）"
 fi
 
 echo ""

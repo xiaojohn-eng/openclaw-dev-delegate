@@ -33,9 +33,16 @@ if [[ -z "$TASK_ID" ]]; then
   exit 1
 fi
 
+mkdir -p "$STATE_DIR"
+
 take_snapshot() {
   local PHASE=$1
   local PREFIX="$STATE_DIR/${TASK_ID}_env_${PHASE}"
+
+  # M-01 修复：校验 before/after 时 PROJECT_DIR 非空
+  if [[ -z "$PROJECT_DIR" ]]; then
+    echo "⚠️  未指定 --project-dir，跳过项目目录大小统计"
+  fi
 
   # Python 包列表
   pip3 list --format=freeze > "${PREFIX}_pip.txt" 2>/dev/null || echo "pip3 不可用" > "${PREFIX}_pip.txt"
@@ -141,8 +148,9 @@ show_diff() {
     echo "### ✅ 环境无变更"
   fi
 
-  } 2>&1 | tee "$DIFF_FILE"
+  } > "$DIFF_FILE" 2>&1
 
+  cat "$DIFF_FILE"
   echo ""
   echo "📄 环境对比报告: $DIFF_FILE"
 }

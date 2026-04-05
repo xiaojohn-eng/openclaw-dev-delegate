@@ -13,9 +13,16 @@
 
 set -uo pipefail
 
+# 检查 python3 可用性
+if ! command -v python3 &>/dev/null; then
+  echo "❌ python3 不可用，subscription_guard.sh 无法执行"
+  exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(dirname "$SCRIPT_DIR")"
 STATE_DIR="$SKILL_DIR/state"
+mkdir -p "$STATE_DIR"
 CALL_LOG="$STATE_DIR/call_log.jsonl"
 
 # ─── 配置 ───
@@ -80,10 +87,18 @@ print(int(last))
 
 # ─── 检查 1：用户是否在使用 Claude Code ───
 check_user_active() {
+  # H-06 修复：使用精确匹配，避免匹配到 "vim CLAUDE.md" 等无关进程
   # 检查是否有交互式 Claude Code 会话（非 -p 模式）
-  # -p 是 pipe 模式（OpenClaw 调用的），交互式的没有 -p
-  local interactive_count
-  interactive_count=$(pgrep -af "claude" 2>/dev/null | grep -v "\-p " | grep -v "grep" | grep -v "delegate_to_claude" | grep -v "monitor_claude" | wc -l || echo 0)
+  local interactive_count=0
+  while IFS= read -r line; do
+    # 跳过包含 -p 的（OpenClaw 调用的 pipe 模式）
+    [[ "$line" == *" -p "* ]] && continue
+    # 跳过脚本自身
+    [[ "$line" == *"delegate_to_claude"* ]] && continue
+    [[ "$line" == *"monitor_claude"* ]] && continue
+    [[ "$line" == *"subscription_guard"* ]] && continue
+    ((interactive_count++)) || true
+  done < <(pgrep -x claude -a 2>/dev/null || true)
 
   if [[ "$interactive_count" -gt 0 ]]; then
     echo "USER_ACTIVE"
@@ -95,8 +110,11 @@ check_user_active() {
 
 # ─── 检查 2：是否有其他 Claude Code 会话在跑 ───
 check_concurrent() {
-  local claude_p_count
-  claude_p_count=$(pgrep -af "claude.*-p" 2>/dev/null | grep -v "grep" | wc -l || echo 0)
+  # H-06 修复：使用 pgrep -x 精确匹配可执行文件名
+  local claude_p_count=0
+  while IFS= read -r line; do
+    [[ "$line" == *" -p "* ]] && ((claude_p_count++)) || true
+  done < <(pgrep -x claude -a 2>/dev/null || true)
 
   if [[ "$claude_p_count" -gt 0 ]]; then
     echo "CONCURRENT_SESSION"

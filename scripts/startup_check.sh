@@ -8,9 +8,15 @@
 
 set -uo pipefail
 
+if ! command -v python3 &>/dev/null; then
+  echo "❌ python3 不可用"
+  exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(dirname "$SCRIPT_DIR")"
 STATE_DIR="$SKILL_DIR/state"
+mkdir -p "$STATE_DIR"
 
 ACTION="${1:---check}"
 
@@ -43,7 +49,7 @@ for bg_pid_file in "$STATE_DIR"/*_bg.pid; do
   elif [[ -f "$DONE_FILE" ]]; then
     # 进程已结束，有完成标记
     DONE_INFO=$(cat "$DONE_FILE")
-    EXIT_CODE=$(echo "$DONE_INFO" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('exit_code',99))" 2>/dev/null || echo "?")
+    EXIT_CODE=$(python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('exit_code',99))" < "$DONE_FILE" 2>/dev/null || echo "?")
 
     if [[ "$EXIT_CODE" == "0" ]]; then
       echo "🟡 已完成但未汇报: $TASK_ID"
