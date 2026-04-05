@@ -1,0 +1,366 @@
+#!/usr/bin/env bash
+# verify_delivery.sh — 产出验证脚本
+# 用途：验证 Claude Code 的产出是否真实存在、测试是否通过
+#
+# 用法：
+#   ./verify_delivery.sh \
+#     --project-dir /root/my-project \
+#     --task-id task_001 \
+#     [--claimed-files file1.py,file2.py]  # 可选：声称修改的文件
+#     [--test-cmd "python3 -m pytest"]      # 可选：测试命令
+#
+# 退出码：
+#   0 = 全部验证通过
+#   1 = 有验证项失败
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SKILL_DIR="$(dirname "$SCRIPT_DIR")"
+STATE_DIR="$SKILL_DIR/state"
+
+# ─── 参数解析 ───
+PROJECT_DIR=""
+TASK_ID=""
+CLAIMED_FILES=""
+TEST_CMD=""
+ACCEPTANCE_CMDS=""  # 自动验收命令文件
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project-dir)      PROJECT_DIR="$2"; shift 2 ;;
+    --task-id)          TASK_ID="$2"; shift 2 ;;
+    --claimed-files)    CLAIMED_FILES="$2"; shift 2 ;;
+    --test-cmd)         TEST_CMD="$2"; shift 2 ;;
+    --acceptance-cmds)  ACCEPTANCE_CMDS="$2"; shift 2 ;;
+    *) echo "未知参数: $1"; exit 1 ;;
+  esac
+done
+
+if [[ -z "$PROJECT_DIR" || -z "$TASK_ID" ]]; then
+  echo "❌ 缺少 --project-dir 或 --task-id"
+  exit 1
+fi
+
+REPORT_FILE="$STATE_DIR/${TASK_ID}_verify_report.md"
+PASS_COUNT=0
+FAIL_COUNT=0
+WARN_COUNT=0
+
+log_pass() { echo "  ✅ $1"; ((PASS_COUNT++)); }
+log_fail() { echo "  ❌ $1"; ((FAIL_COUNT++)); }
+log_warn() { echo "  ⚠️  $1"; ((WARN_COUNT++)); }
+
+{
+echo "# 验证报告：${TASK_ID}"
+echo "**时间**：$(date -Iseconds)"
+echo "**项目**：${PROJECT_DIR}"
+echo ""
+
+# ─── 检查 1：Claude Code 会话是否真实存在 ───
+echo "## 1. Claude Code 会话验证"
+
+OUTPUT_FILE="$STATE_DIR/${TASK_ID}_output.txt"
+if [[ -f "$OUTPUT_FILE" && -s "$OUTPUT_FILE" ]]; then
+  OUTPUT_SIZE=$(stat -c%s "$OUTPUT_FILE" 2>/dev/null || stat -f%z "$OUTPUT_FILE" 2>/dev/null || echo 0)
+  log_pass "Claude Code 输出文件存在（${OUTPUT_SIZE} bytes）"
+else
+  log_fail "Claude Code 输出文件不存在或为空"
+fi
+
+# 检查调用日志
+CALL_LOG="$STATE_DIR/call_log.jsonl"
+if [[ -f "$CALL_LOG" ]]; then
+  TASK_LOG=$(grep "\"$TASK_ID\"" "$CALL_LOG" | tail -1)
+  if [[ -n "$TASK_LOG" ]]; then
+    WAS_SUCCESS=$(echo "$TASK_LOG" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('success',False))" 2>/dev/null || echo "unknown")
+    DURATION=$(echo "$TASK_LOG" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('duration_seconds',0))" 2>/dev/null || echo "?")
+    if [[ "$WAS_SUCCESS" == "True" ]]; then
+      log_pass "Claude Code 调用成功，耗时 ${DURATION}s"
+    else
+      log_fail "Claude Code 调用记录显示失败"
+    fi
+  else
+    log_fail "调用日志中无此任务记录"
+  fi
+else
+  log_fail "调用日志文件不存在"
+fi
+echo ""
+
+# ─── 检查 2：Git 变更验证 ───
+echo "## 2. Git 变更验证"
+
+cd "$PROJECT_DIR" 2>/dev/null || { log_fail "无法进入项目目录"; }
+
+if command -v git &>/dev/null && git rev-parse --is-inside-work-tree &>/dev/null 2>&1; then
+  CHANGED_FILES=$(git diff --name-only HEAD 2>/dev/null || true)
+  UNTRACKED_FILES=$(git ls-files --others --exclude-standard 2>/dev/null || true)
+  ALL_CHANGES="$CHANGED_FILES"$'\n'"$UNTRACKED_FILES"
+  ALL_CHANGES=$(echo "$ALL_CHANGES" | sed '/^$/d' | sort -u)
+  CHANGE_COUNT=$(echo "$ALL_CHANGES" | sed '/^$/d' | wc -l)
+
+  if [[ $CHANGE_COUNT -gt 0 ]]; then
+    log_pass "检测到 ${CHANGE_COUNT} 个文件变更"
+    echo "  变更文件列表："
+    echo "$ALL_CHANGES" | sed 's/^/    - /'
+  else
+    log_warn "未检测到 git 变更（可能已被提交或无实际改动）"
+  fi
+else
+  log_warn "项目不是 git 仓库，跳过 git 变更检查"
+fi
+echo ""
+
+# ─── 检查 3：声称文件存在性 ───
+echo "## 3. 文件存在性验证"
+
+if [[ -n "$CLAIMED_FILES" ]]; then
+  IFS=',' read -ra FILES <<< "$CLAIMED_FILES"
+  for f in "${FILES[@]}"; do
+    f=$(echo "$f" | xargs)  # trim
+    if [[ -z "$f" ]]; then continue; fi
+    FULL_PATH="$PROJECT_DIR/$f"
+    # 也检查绝对路径
+    [[ "$f" == /* ]] && FULL_PATH="$f"
+    if [[ -f "$FULL_PATH" ]]; then
+      FILE_SIZE=$(stat -c%s "$FULL_PATH" 2>/dev/null || stat -f%z "$FULL_PATH" 2>/dev/null || echo 0)
+      FILE_MTIME=$(stat -c%Y "$FULL_PATH" 2>/dev/null || stat -f%m "$FULL_PATH" 2>/dev/null || echo 0)
+      log_pass "$f （${FILE_SIZE} bytes）"
+    else
+      log_fail "$f 不存在！"
+    fi
+  done
+else
+  # 如果没指定，从 Claude Code 输出中提取
+  if [[ -f "$OUTPUT_FILE" ]]; then
+    EXTRACTED=$(grep -oP '(?:\[新增\]|\[修改\]|\[删除\])\s+\S+' "$OUTPUT_FILE" 2>/dev/null | awk '{print $2}' || true)
+    if [[ -n "$EXTRACTED" ]]; then
+      echo "  从 Claude Code 输出中提取的文件列表："
+      while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        FULL_PATH="$PROJECT_DIR/$f"
+        [[ "$f" == /* ]] && FULL_PATH="$f"
+        if [[ -f "$FULL_PATH" ]]; then
+          log_pass "$f"
+        else
+          log_fail "$f 不存在！"
+        fi
+      done <<< "$EXTRACTED"
+    else
+      log_warn "无法从输出中提取文件列表，跳过"
+    fi
+  fi
+fi
+echo ""
+
+# ─── 检查 4：最近文件修改时间 ───
+echo "## 4. 最近修改的文件（30分钟内）"
+
+RECENT_FILES=$(find "$PROJECT_DIR" \
+  -not -path '*/.git/*' \
+  -not -path '*/__pycache__/*' \
+  -not -path '*/node_modules/*' \
+  -not -path '*/.dev-delegate/*' \
+  -type f -mmin -30 2>/dev/null | head -30 || true)
+
+if [[ -n "$RECENT_FILES" ]]; then
+  RECENT_COUNT=$(echo "$RECENT_FILES" | wc -l)
+  log_pass "发现 ${RECENT_COUNT} 个最近修改的文件"
+  echo "$RECENT_FILES" | while IFS= read -r f; do
+    REL=$(echo "$f" | sed "s|$PROJECT_DIR/||")
+    MTIME=$(stat -c'%Y' "$f" 2>/dev/null || echo 0)
+    MTIME_HR=$(date -d "@$MTIME" '+%H:%M:%S' 2>/dev/null || echo "?")
+    echo "    - $REL ($MTIME_HR)"
+  done
+else
+  log_warn "30分钟内无文件修改"
+fi
+echo ""
+
+# ─── 检查 5：测试结果 ───
+echo "## 5. 测试验证"
+
+if [[ -n "$TEST_CMD" ]]; then
+  echo "  执行测试命令: $TEST_CMD"
+  echo "  ─────────────"
+  set +e
+  TEST_OUTPUT=$(cd "$PROJECT_DIR" && eval "$TEST_CMD" 2>&1)
+  TEST_EXIT=$?
+  set -e
+  echo "$TEST_OUTPUT" | tail -30 | sed 's/^/  /'
+  echo "  ─────────────"
+  if [[ $TEST_EXIT -eq 0 ]]; then
+    log_pass "测试通过（退出码 0）"
+  else
+    log_fail "测试失败（退出码 $TEST_EXIT）"
+  fi
+else
+  # 自动检测测试框架
+  cd "$PROJECT_DIR"
+  if [[ -f "pyproject.toml" || -f "setup.py" || -d "tests" ]]; then
+    echo "  检测到 Python 项目，尝试 pytest..."
+    set +e
+    TEST_OUTPUT=$(python3 -m pytest --tb=short -q 2>&1)
+    TEST_EXIT=$?
+    set -e
+    echo "$TEST_OUTPUT" | tail -20 | sed 's/^/  /'
+    if [[ $TEST_EXIT -eq 0 ]]; then
+      log_pass "pytest 通过"
+    elif [[ $TEST_EXIT -eq 5 ]]; then
+      log_warn "pytest: 未找到测试用例"
+    else
+      log_fail "pytest 失败（退出码 $TEST_EXIT）"
+    fi
+  elif [[ -f "package.json" ]]; then
+    echo "  检测到 Node 项目，尝试 npm test..."
+    set +e
+    TEST_OUTPUT=$(npm test 2>&1)
+    TEST_EXIT=$?
+    set -e
+    echo "$TEST_OUTPUT" | tail -20 | sed 's/^/  /'
+    if [[ $TEST_EXIT -eq 0 ]]; then
+      log_pass "npm test 通过"
+    else
+      log_fail "npm test 失败（退出码 $TEST_EXIT）"
+    fi
+  else
+    log_warn "未检测到测试框架，跳过自动测试"
+  fi
+fi
+echo ""
+
+# ─── 检查 6：自动验收命令 ───
+echo "## 6. 自动验收命令"
+
+# 从任务简报中提取验收命令
+BRIEF_FILE="$STATE_DIR/${TASK_ID}_output.txt"
+if [[ -n "$ACCEPTANCE_CMDS" && -f "$ACCEPTANCE_CMDS" ]]; then
+  echo "  执行验收命令文件: $ACCEPTANCE_CMDS"
+  while IFS= read -r cmd; do
+    cmd=$(echo "$cmd" | xargs)
+    [[ -z "$cmd" || "$cmd" == "#"* ]] && continue
+    echo "  > $cmd"
+    set +e
+    CMD_OUTPUT=$(cd "$PROJECT_DIR" && eval "$cmd" 2>&1)
+    CMD_EXIT=$?
+    set -e
+    if [[ $CMD_EXIT -eq 0 ]]; then
+      log_pass "验收通过: $cmd"
+    else
+      log_fail "验收失败: $cmd"
+      echo "$CMD_OUTPUT" | tail -5 | sed 's/^/    /'
+    fi
+  done < "$ACCEPTANCE_CMDS"
+else
+  # 尝试从任务简报中自动提取验收命令（bash 代码块内容）
+  TASK_BRIEF_FILE=$(find "$STATE_DIR" -name "${TASK_ID}*.md" -path "*/task_brief*" 2>/dev/null | head -1 || true)
+  if [[ -z "$TASK_BRIEF_FILE" ]]; then
+    # 也检查 state 目录下有没有原始 brief
+    TASK_BRIEF_FILE=$(find "$STATE_DIR" -name "*brief*" -newer "$STATE_DIR/active_task.json" 2>/dev/null | head -1 || true)
+  fi
+
+  if [[ -n "$TASK_BRIEF_FILE" && -f "$TASK_BRIEF_FILE" ]]; then
+    # 提取 ```bash 代码块中的验收命令
+    EXTRACTED_CMDS=$(python3 -c "
+import re
+content = open('$TASK_BRIEF_FILE').read()
+# 找 '验收命令' 或 'acceptance' 后面的 bash 代码块
+pattern = r'(?:验收命令|acceptance|验收标准.*?)\n+\`\`\`(?:bash)?\n(.*?)\`\`\`'
+matches = re.findall(pattern, content, re.DOTALL | re.IGNORECASE)
+for m in matches:
+    for line in m.strip().split('\n'):
+        line = line.strip()
+        if line and not line.startswith('#'):
+            print(line)
+" 2>/dev/null || true)
+
+    if [[ -n "$EXTRACTED_CMDS" ]]; then
+      echo "  从任务简报中提取到验收命令："
+      while IFS= read -r cmd; do
+        [[ -z "$cmd" ]] && continue
+        echo "  > $cmd"
+        set +e
+        CMD_OUTPUT=$(cd "$PROJECT_DIR" && eval "$cmd" 2>&1)
+        CMD_EXIT=$?
+        set -e
+        if [[ $CMD_EXIT -eq 0 ]]; then
+          log_pass "验收通过: $cmd"
+        else
+          log_fail "验收失败: $cmd"
+          echo "$CMD_OUTPUT" | tail -5 | sed 's/^/    /'
+        fi
+      done <<< "$EXTRACTED_CMDS"
+    else
+      log_warn "未找到自动验收命令（建议在任务简报中添加）"
+    fi
+  else
+    log_warn "未找到任务简报，跳过自动验收"
+  fi
+fi
+echo ""
+
+# ─── 检查 7：环境变更 ───
+echo "## 7. 环境变更检查"
+
+ENV_DIFF_FILE="$STATE_DIR/${TASK_ID}_env_diff.md"
+if [[ -f "$STATE_DIR/${TASK_ID}_env_before_pip.txt" && -f "$STATE_DIR/${TASK_ID}_env_after_pip.txt" ]]; then
+  "$SCRIPT_DIR/env_snapshot.sh" --diff --task-id "$TASK_ID" 2>/dev/null | grep -E "新增的包|移除的包|端口|无变更|检测到环境变更" | sed 's/^/  /' || log_warn "环境对比失败"
+else
+  log_warn "缺少环境快照，跳过对比"
+fi
+echo ""
+
+# ─── 汇总 ───
+echo "## 验证汇总"
+echo ""
+TOTAL=$((PASS_COUNT + FAIL_COUNT + WARN_COUNT))
+echo "| 结果 | 数量 |"
+echo "|------|------|"
+echo "| ✅ 通过 | $PASS_COUNT |"
+echo "| ❌ 失败 | $FAIL_COUNT |"
+echo "| ⚠️  警告 | $WARN_COUNT |"
+echo ""
+
+if [[ $FAIL_COUNT -eq 0 ]]; then
+  echo "### 🟢 验证结论：通过"
+  echo "所有关键检查项通过，可以向用户汇报完成。"
+else
+  echo "### 🔴 验证结论：未通过"
+  echo "有 $FAIL_COUNT 项关键检查失败，**不得声称任务完成**。"
+  echo ""
+  echo "### 失败反馈（供重新调用 Claude Code 时使用）"
+  echo ""
+  echo "OpenClaw 在重新调用 Claude Code 时，必须将以下内容作为上下文传入："
+  echo ""
+  echo '```markdown'
+  echo "## 上次任务失败的具体原因"
+  echo ""
+  echo "### 失败的验证项"
+
+  # 回溯整个报告，提取 ❌ 行（排除表格汇总行）
+  grep "❌" "$REPORT_FILE" 2>/dev/null | grep -v "^|" | grep -v "验证结论" | while IFS= read -r line; do
+    echo "- $(echo "$line" | sed 's/^[[:space:]]*//')"
+  done
+
+  echo ""
+  echo "### 修复要求"
+  echo "1. 只修复上面列出的失败项"
+  echo "2. 不要重写已经正常工作的模块"
+  echo "3. 修完后跑一遍完整测试确认"
+  echo '```'
+  echo ""
+  echo "📋 失败反馈已包含在报告中，可直接作为续接任务简报的输入。"
+fi
+
+} 2>&1 | tee "$REPORT_FILE"
+
+echo ""
+echo "📄 完整报告已保存到: $REPORT_FILE"
+
+# 退出码
+if [[ $FAIL_COUNT -gt 0 ]]; then
+  exit 1
+else
+  exit 0
+fi

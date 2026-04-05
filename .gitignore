@@ -1,0 +1,10 @@
+# 运行时状态文件
+state/*.json
+state/*.jsonl
+state/*.txt
+state/*.md
+state/*.log
+state/*.pid
+
+# 不忽略 state 目录本身
+!state/.gitkeep
