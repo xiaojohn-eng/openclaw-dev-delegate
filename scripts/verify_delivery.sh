@@ -76,20 +76,28 @@ validate_test_cmd() {
   local -a SAFE_PREFIXES=(
     # 测试框架
     "python3 -m pytest" "python -m pytest" "pytest" "python3 -m unittest"
+    "uv run pytest" "uv run python" "poetry run pytest" "poetry run python"
     "npm test" "npm run test" "npx jest" "npx vitest" "npx mocha"
-    "go test" "cargo test" "make test" "gradle test" "mvn test" "dotnet test"
-    "bundle exec rspec" "php artisan test" "mix test"
+    "pnpm test" "pnpm run test" "pnpm exec " "pnpm lint" "pnpm run lint"
+    "yarn test" "yarn run test" "yarn lint"
+    "go test" "cargo test" "make test" "gradle test" "gradlew test"
+    "./gradlew " "mvn test" "mvn verify" "dotnet test"
+    "bundle exec rspec" "bundle exec rake" "php artisan test" "mix test"
     # 健康检查
-    "curl -sf" "curl -s" "curl --fail" "wget -q"
+    "curl -sf" "curl -s" "curl --fail" "curl http://127.0.0.1" "curl http://localhost"
+    "wget -q"
     # 代码验证
     "python3 -c" "python -c" "node -e" "ruby -e" "go run"
     # 文件检查
     "ls " "cat " "test " "[ " "stat " "wc " "head " "tail " "grep " "diff "
     # 构建验证
     "make " "npm run " "yarn " "pnpm " "go build" "cargo build" "cargo check"
-    "python3 -m " "pip " "pip3 "
+    "python3 -m " "pip " "pip3 " "uv pip " "uv run "
     # lint / type check
     "eslint" "tsc " "mypy " "flake8" "ruff " "golangci-lint" "clippy"
+    "prettier " "biome " "deno lint" "deno check" "deno test"
+    # 脚本执行
+    "bash scripts/" "sh scripts/" "./scripts/" "bash test" "bash check"
   )
   for prefix in "${SAFE_PREFIXES[@]}"; do
     if [[ "$cmd" == "$prefix"* ]]; then

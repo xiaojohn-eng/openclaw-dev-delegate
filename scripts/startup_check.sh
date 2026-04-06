@@ -79,25 +79,29 @@ for bg_pid_file in "$STATE_DIR"/*_bg.pid; do
 done
 
 # ─── 检查过期的锁文件 ───
+STALE_LOCK=false
 if [[ -f "$STATE_DIR/lock.pid" ]]; then
   LOCK_PID=$(cat "$STATE_DIR/lock.pid")
   if ! kill -0 "$LOCK_PID" 2>/dev/null; then
-    echo ""
-    echo "⚠️ 发现过期锁文件 (PID: $LOCK_PID 已不存在)"
-    if [[ "$ACTION" == "--cleanup" ]]; then
-      rm -f "$STATE_DIR/lock.pid"
-      echo "   已清理"
-    else
-      echo "   执行 $0 --cleanup 清理"
+    LOCK_AGE=""
+    LOCK_MTIME=$(stat -c%Y "$STATE_DIR/lock.pid" 2>/dev/null || echo 0)
+    if [[ "$LOCK_MTIME" -gt 0 ]]; then
+      LOCK_AGE_SEC=$(( $(date +%s) - LOCK_MTIME ))
+      LOCK_AGE="$(( LOCK_AGE_SEC / 60 ))分钟前"
     fi
+    echo ""
+    echo "⚠️ 发现过期锁文件 (PID: $LOCK_PID 已不存在, 创建于${LOCK_AGE:-未知})"
+    STALE_LOCK=true
     ((STALE++))
   fi
 fi
 
-# ─── 清理模式 ───
-if [[ "$ACTION" == "--cleanup" ]]; then
+# ─── 清理模式（--cleanup）或自动清理过期锁 ───
+if [[ "$ACTION" == "--cleanup" ]] || [[ "$STALE_LOCK" == "true" ]]; then
   echo ""
   echo "🧹 清理过期状态..."
+
+  # 清理过期的 bg.pid 文件
   for bg_pid_file in "$STATE_DIR"/*_bg.pid; do
     [[ -f "$bg_pid_file" ]] || continue
     BG_PID=$(cat "$bg_pid_file")
@@ -106,8 +110,17 @@ if [[ "$ACTION" == "--cleanup" ]]; then
       echo "   已清理: $(basename "$bg_pid_file")"
     fi
   done
-  rm -f "$STATE_DIR/lock.pid" 2>/dev/null || true
-  echo "   完成"
+
+  # 清理过期锁
+  if [[ -f "$STATE_DIR/lock.pid" ]]; then
+    LOCK_PID=$(cat "$STATE_DIR/lock.pid")
+    if ! kill -0 "$LOCK_PID" 2>/dev/null; then
+      rm -f "$STATE_DIR/lock.pid"
+      echo "   已清理: lock.pid (PID: $LOCK_PID)"
+    fi
+  fi
+
+  echo "   ✅ 清理完成"
 fi
 
 # ─── 汇总 ───

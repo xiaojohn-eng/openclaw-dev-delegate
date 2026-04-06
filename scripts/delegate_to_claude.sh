@@ -64,7 +64,69 @@ if [[ -z "${CLAUDE_BIN:-}" ]] || [[ ! -x "${CLAUDE_BIN:-}" ]]; then
 fi
 
 CALL_LOG="$STATE_DIR/call_log.jsonl"
+CLI_CAPS_CACHE="$STATE_DIR/.cli_caps_cache"
 DEFAULT_TIMEOUT=1800  # 30 分钟（大任务需要更多时间）
+
+# ─── Claude CLI 版本与能力探测（缓存） ───
+detect_cli_capabilities() {
+  # 获取当前 CLI 版本
+  local CLI_VERSION
+  CLI_VERSION=$("$CLAUDE_BIN" --version 2>/dev/null | head -1 || echo "unknown")
+
+  # 检查缓存是否有效（版本未变）
+  if [[ -f "$CLI_CAPS_CACHE" ]]; then
+    local CACHED_VERSION
+    CACHED_VERSION=$(head -1 "$CLI_CAPS_CACHE" 2>/dev/null || echo "")
+    if [[ "$CACHED_VERSION" == "$CLI_VERSION" ]]; then
+      # 缓存命中，直接加载
+      return 0
+    fi
+  fi
+
+  # 缓存失效或不存在，重新探测
+  local HELP_OUTPUT
+  HELP_OUTPUT=$("$CLAUDE_BIN" --help 2>&1 || true)
+
+  local HAS_OUTPUT_FORMAT=false HAS_PERMISSION_MODE=false HAS_SKIP_PERMISSIONS=false
+  local HAS_ALLOWED_TOOLS=false HAS_ADD_DIR=false HAS_CWD=false HAS_MAX_TURNS=false
+  local HAS_MODEL=false HAS_VERBOSE=false
+
+  echo "$HELP_OUTPUT" | grep -q '\-\-output-format' && HAS_OUTPUT_FORMAT=true
+  echo "$HELP_OUTPUT" | grep -q '\-\-permission-mode' && HAS_PERMISSION_MODE=true
+  echo "$HELP_OUTPUT" | grep -q '\-\-dangerously-skip-permissions' && HAS_SKIP_PERMISSIONS=true
+  echo "$HELP_OUTPUT" | grep -qE '\-\-allowedTools|--allowed-tools' && HAS_ALLOWED_TOOLS=true
+  echo "$HELP_OUTPUT" | grep -q '\-\-add-dir' && HAS_ADD_DIR=true
+  echo "$HELP_OUTPUT" | grep -q '\-\-cwd' && HAS_CWD=true
+  echo "$HELP_OUTPUT" | grep -q '\-\-max-turns' && HAS_MAX_TURNS=true
+  echo "$HELP_OUTPUT" | grep -q '\-\-model' && HAS_MODEL=true
+  echo "$HELP_OUTPUT" | grep -q '\-\-verbose' && HAS_VERBOSE=true
+
+  # 写入缓存
+  cat > "$CLI_CAPS_CACHE" <<CAPSEOF
+${CLI_VERSION}
+output_format=${HAS_OUTPUT_FORMAT}
+permission_mode=${HAS_PERMISSION_MODE}
+skip_permissions=${HAS_SKIP_PERMISSIONS}
+allowed_tools=${HAS_ALLOWED_TOOLS}
+add_dir=${HAS_ADD_DIR}
+cwd=${HAS_CWD}
+max_turns=${HAS_MAX_TURNS}
+model=${HAS_MODEL}
+verbose=${HAS_VERBOSE}
+detected_at=$(date -Iseconds)
+CAPSEOF
+
+  echo "📋 CLI 能力探测完成（版本: ${CLI_VERSION}），已缓存"
+}
+
+# 从缓存读取能力值
+cli_has() {
+  local cap="$1"
+  grep -q "^${cap}=true" "$CLI_CAPS_CACHE" 2>/dev/null
+}
+
+# 执行探测
+detect_cli_capabilities
 
 # ─── 参数解析 ───
 PROJECT_DIR=""
@@ -142,6 +204,9 @@ if [[ "$CHECK_STATUS" == "true" ]]; then
 
   exit 0
 fi
+
+# ─── 生成唯一 task_token ───
+TASK_TOKEN="${TASK_ID}_$(date +%s)_$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 
 # ─── 参数校验 ───
 if [[ -z "$PROJECT_DIR" || -z "$TASK_ID" || -z "$TASK_BRIEF" ]]; then
@@ -229,7 +294,7 @@ ${BRIEF_CONTENT}
 if [[ "$BACKGROUND" != "true" ]]; then
   echo $$ > "$STATE_DIR/lock.pid"
 fi
-echo "{\"task_id\": \"$TASK_ID\", \"started_at\": \"$(date -Iseconds)\", \"pid\": $$, \"task_brief\": \"$TASK_BRIEF\", \"project_dir\": \"$PROJECT_DIR\"}" > "$STATE_DIR/active_task.json"
+echo "{\"task_id\": \"$TASK_ID\", \"task_token\": \"$TASK_TOKEN\", \"started_at\": \"$(date -Iseconds)\", \"pid\": $$, \"task_brief\": \"$TASK_BRIEF\", \"project_dir\": \"$PROJECT_DIR\"}" > "$STATE_DIR/active_task.json"
 
 # ─── 实际执行函数（前台和后台共用） ───
 run_claude_code() {
@@ -243,31 +308,47 @@ run_claude_code() {
   local MONITOR_PID=$!
 
   # 实际调用 Claude Code
-  # 使用 cd 切换工作目录（兼容所有 CLI 版本），不依赖 --cwd
-  # 动态探测 CLI 支持的参数，不支持的跳过
+  # 使用缓存的 CLI 能力探测结果构建参数（不再每次调 --help）
   local -a CLAUDE_ARGS=(-p "$PROMPT")
+  local -a DEGRADED=()  # 记录降级项
 
   # --output-format
-  if "$CLAUDE_BIN" --help 2>&1 | grep -q '\-\-output-format'; then
+  if cli_has "output_format"; then
     CLAUDE_ARGS+=(--output-format text)
+  else
+    DEGRADED+=("output_format")
   fi
 
   # --permission-mode auto（无确认框）
-  if "$CLAUDE_BIN" --help 2>&1 | grep -q '\-\-permission-mode'; then
+  if cli_has "permission_mode"; then
     CLAUDE_ARGS+=(--permission-mode auto)
-  elif "$CLAUDE_BIN" --help 2>&1 | grep -q '\-\-dangerously-skip-permissions'; then
-    # 降级：旧版 CLI 只有这个选项
+  elif cli_has "skip_permissions"; then
     CLAUDE_ARGS+=(--dangerously-skip-permissions)
+    DEGRADED+=("permission_mode→skip_permissions")
+  else
+    DEGRADED+=("permission_mode")
   fi
 
   # --allowedTools
-  if "$CLAUDE_BIN" --help 2>&1 | grep -q '\-\-allowedTools\|--allowed-tools'; then
+  if cli_has "allowed_tools"; then
     CLAUDE_ARGS+=(--allowedTools "Read,Write,Edit,Bash,Grep,Glob")
+  else
+    DEGRADED+=("allowed_tools")
   fi
 
   # --add-dir（替代不存在的 --cwd，确保 Claude 能访问项目目录）
-  if "$CLAUDE_BIN" --help 2>&1 | grep -q '\-\-add-dir'; then
+  if cli_has "add_dir"; then
     CLAUDE_ARGS+=(--add-dir "$PROJECT_DIR")
+  elif cli_has "cwd"; then
+    CLAUDE_ARGS+=(--cwd "$PROJECT_DIR")
+    DEGRADED+=("add_dir→cwd")
+  else
+    DEGRADED+=("add_dir")
+  fi
+
+  # 记录降级信息
+  if [[ ${#DEGRADED[@]} -gt 0 ]]; then
+    echo "⚠️  CLI 参数降级: ${DEGRADED[*]}" >> "$STATE_DIR/${TASK_ID}_stderr.txt"
   fi
 
   # 记录实际使用的参数开关（不含 prompt 内容）
@@ -305,7 +386,7 @@ run_claude_code() {
   [[ -z "$LATEST_SESSION" ]] && LATEST_SESSION="unknown"
 
   cat >> "$CALL_LOG" <<LOGEOF
-{"call_time":"$CALL_TIME","task_id":"$TASK_ID","duration_seconds":$DURATION,"exit_code":$EXIT_CODE,"success":$([ $EXIT_CODE -eq 0 ] && echo true || echo false),"files_changed":$FILES_CHANGED,"session_file":"$LATEST_SESSION","output_file":"$OUTPUT_FILE","mode":"$([ "$BACKGROUND" = true ] && echo background || echo foreground)"}
+{"call_time":"$CALL_TIME","task_id":"$TASK_ID","task_token":"$TASK_TOKEN","duration_seconds":$DURATION,"exit_code":$EXIT_CODE,"success":$([ $EXIT_CODE -eq 0 ] && echo true || echo false),"files_changed":$FILES_CHANGED,"session_file":"$LATEST_SESSION","output_file":"$OUTPUT_FILE","mode":"$([ "$BACKGROUND" = true ] && echo background || echo foreground)"}
 LOGEOF
 
   # ─── 清理任务锁 ───
@@ -322,11 +403,11 @@ LOGEOF
     local TIMEOUT_CHANGES=$(cd "$PROJECT_DIR" && git diff --stat HEAD 2>/dev/null | tail -1 || echo "无法统计")
     echo "   变更统计: $TIMEOUT_CHANGES" >> "$STDERR_FILE"
     # H-05 修复：超时场景写入合并的单个 JSON 对象（不再用 >> 追加）
-    echo "{\"task_id\":\"$TASK_ID\",\"completed_at\":\"$(date -Iseconds)\",\"exit_code\":$EXIT_CODE,\"duration\":$DURATION,\"files_changed\":$FILES_CHANGED,\"event\":\"timeout\",\"partial_changes\":\"$TIMEOUT_CHANGES\"}" > "$STATE_DIR/${TASK_ID}_done.json"
+    echo "{\"task_id\":\"$TASK_ID\",\"task_token\":\"$TASK_TOKEN\",\"completed_at\":\"$(date -Iseconds)\",\"exit_code\":$EXIT_CODE,\"duration\":$DURATION,\"files_changed\":$FILES_CHANGED,\"event\":\"timeout\",\"partial_changes\":\"$TIMEOUT_CHANGES\"}" > "$STATE_DIR/${TASK_ID}_done.json"
     return 4
   else
     # 正常完成或失败，写入完成标记
-    echo "{\"task_id\":\"$TASK_ID\",\"completed_at\":\"$(date -Iseconds)\",\"exit_code\":$EXIT_CODE,\"duration\":$DURATION,\"files_changed\":$FILES_CHANGED}" > "$STATE_DIR/${TASK_ID}_done.json"
+    echo "{\"task_id\":\"$TASK_ID\",\"task_token\":\"$TASK_TOKEN\",\"completed_at\":\"$(date -Iseconds)\",\"exit_code\":$EXIT_CODE,\"duration\":$DURATION,\"files_changed\":$FILES_CHANGED}" > "$STATE_DIR/${TASK_ID}_done.json"
   fi
 
   if [[ $EXIT_CODE -ne 0 && $EXIT_CODE -ne 124 ]]; then
@@ -339,11 +420,13 @@ LOGEOF
 # Dev-Delegate 项目状态
 **最后更新**: $(date -Iseconds)
 **最后任务**: $TASK_ID
+**任务令牌**: $TASK_TOKEN
 **状态**: $([ $EXIT_CODE -eq 0 ] && echo "完成" || echo "异常")
 **文件变动**: $FILES_CHANGED 个
 
 ## 调用记录
 - 任务ID: $TASK_ID
+- 任务令牌: $TASK_TOKEN
 - 耗时: ${DURATION}s
 - 退出码: $EXIT_CODE
 - Claude Code 会话: $LATEST_SESSION
@@ -362,7 +445,7 @@ if [[ "$BACKGROUND" == "true" ]]; then
   # 在后台执行（H-02 修复：在子shell内用 $BASHPID 写入 lock.pid）
   # L-02 修复：trap 捕获错误并写入状态文件
   (
-    trap 'echo "{\"task_id\":\"'"$TASK_ID"'\",\"error\":\"subshell_crash\",\"exit_code\":\$?,\"time\":\"$(date -Iseconds)\"}" > "'"$STATE_DIR/${TASK_ID}_done.json"'"; rm -f "'"$STATE_DIR/lock.pid"'"' ERR
+    trap 'echo "{\"task_id\":\"'"$TASK_ID"'\",\"task_token\":\"'"$TASK_TOKEN"'\",\"error\":\"subshell_crash\",\"exit_code\":\$?,\"time\":\"$(date -Iseconds)\"}" > "'"$STATE_DIR/${TASK_ID}_done.json"'"; rm -f "'"$STATE_DIR/lock.pid"'"' ERR
     echo "$BASHPID" > "$STATE_DIR/lock.pid"
     run_claude_code
   ) &

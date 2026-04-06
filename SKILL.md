@@ -1,7 +1,7 @@
 ---
 name: dev-delegate
 description: 开发委托技能 — OpenClaw 调用 Claude Code 开发时的职责分离、防幻觉、防打断、证据链验证
-version: 2.0.0
+version: 2.1.0
 triggers:
   - 调用 claude code
   - 用 claude code 做
@@ -16,9 +16,10 @@ triggers:
 
 # dev-delegate — 开发委托技能
 
-> **版本**：2.0.0
+> **版本**：2.1.0
 > **作者**：军哥 + Claude Code
 > **创建日期**：2026-04-06
+> **更新日期**：2026-04-07
 > **用途**：当用户要求 OpenClaw 调用 Claude Code 进行软件开发时，强制执行职责分离、防幻觉、防打断、证据链验证。
 
 ---
@@ -386,7 +387,8 @@ OpenClaw 下次进入同一项目时，应先读取此文件了解上下文，
 │   ├── progress_report.sh         # 证据链汇报生成
 │   ├── env_snapshot.sh            # 环境快照对比
 │   ├── crash_recover.sh           # 崩溃断点续接
-│   └── startup_check.sh           # OpenClaw 启动自检
+│   ├── startup_check.sh           # OpenClaw 启动自检
+│   └── regression_test.sh         # 回归测试（11 个场景）
 ├── templates/
 │   ├── task_brief.md              # 任务简报模板（含自动验收命令）
 │   ├── phase_report.md            # 阶段汇报模板
