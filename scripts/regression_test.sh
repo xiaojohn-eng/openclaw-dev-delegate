@@ -17,6 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(dirname "$SCRIPT_DIR")"
 STATE_DIR="$SKILL_DIR/state"
 TEST_BASE="/tmp/dev-delegate-regression-$$"
+MOCK_CLAUDE="$SCRIPT_DIR/mock_claude.sh"
 QUICK=false
 SINGLE_TEST=""
 
@@ -67,7 +68,8 @@ create_brief() {
 
 验收命令：
 ```bash
-python3 -c "import sys; sys.path.insert(0,'src'); exec(open('src/main.py').read()); print('ok')"
+python3 -m pytest tests/ -q
+test -f src/main.py
 ```
 
 ## 3. 约束
@@ -321,6 +323,191 @@ run_test "concurrent_guard"    "并发保护拦截生效"           test_concurr
 run_test "stale_lock"          "过期锁自动清理"             test_stale_lock_cleanup
 run_test "cli_caps"            "CLI 能力探测"               test_cli_caps_cache
 run_test "verify_whitelist"    "验证命令白名单准确"         test_verify_whitelist
+
+# ═══════════════════════════════════════
+#  全链路集成测试（使用 mock claude）
+# ═══════════════════════════════════════
+
+test_e2e_foreground() {
+  # 测试：前台委托全链路（mock claude → 文件变更 → 验证通过）
+  local proj_dir
+  proj_dir=$(setup_test_project "e2e_fg")
+  local brief
+  brief=$(create_brief "$proj_dir")
+
+  # 清理可能残留的锁
+  rm -f "$STATE_DIR/lock.pid" "$STATE_DIR/e2e_fg_01_bg.pid"
+
+  # 用 mock claude 替代真实 CLI
+  CLAUDE_BIN="$MOCK_CLAUDE" MOCK_MODE=success MOCK_DELAY=1 \
+    "$SCRIPT_DIR/delegate_to_claude.sh" \
+      --project-dir "$proj_dir" \
+      --task-id "e2e_fg_01" \
+      --task-brief "$brief" \
+      --timeout 30 >/dev/null 2>&1
+
+  local rc=$?
+  [[ $rc -ne 0 ]] && { echo "   delegate 退出码: $rc"; return 1; }
+
+  # 验证输出文件存在
+  [[ -f "$STATE_DIR/e2e_fg_01_output.txt" ]] || { echo "   output.txt 不存在"; return 1; }
+  [[ -s "$STATE_DIR/e2e_fg_01_output.txt" ]] || { echo "   output.txt 为空"; return 1; }
+
+  # 验证 done.json 存在且退出码为 0
+  [[ -f "$STATE_DIR/e2e_fg_01_done.json" ]] || { echo "   done.json 不存在"; return 1; }
+  local exit_code
+  exit_code=$(python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('exit_code','?'))" < "$STATE_DIR/e2e_fg_01_done.json" 2>/dev/null)
+  [[ "$exit_code" == "0" ]] || { echo "   done.json exit_code=$exit_code (期望 0)"; return 1; }
+
+  # 验证 task_token 存在
+  grep -q "task_token" "$STATE_DIR/e2e_fg_01_done.json" || { echo "   done.json 无 task_token"; return 1; }
+
+  # 验证 call_log 有记录
+  grep -q "e2e_fg_01" "$STATE_DIR/call_log.jsonl" || { echo "   call_log 无记录"; return 1; }
+
+  # 验证项目文件确实被修改
+  [[ -f "$proj_dir/src/greet.py" ]] || { echo "   src/greet.py 未创建"; return 1; }
+
+  return 0
+}
+
+test_e2e_background_status() {
+  # 测试：后台委托 + --status 查询
+  local proj_dir
+  proj_dir=$(setup_test_project "e2e_bg")
+  local brief
+  brief=$(create_brief "$proj_dir")
+
+  rm -f "$STATE_DIR/lock.pid" "$STATE_DIR/e2e_bg_01_bg.pid"
+
+  # 后台启动
+  CLAUDE_BIN="$MOCK_CLAUDE" MOCK_MODE=success MOCK_DELAY=2 \
+    "$SCRIPT_DIR/delegate_to_claude.sh" \
+      --project-dir "$proj_dir" \
+      --task-id "e2e_bg_01" \
+      --task-brief "$brief" \
+      --background \
+      --timeout 30 >/dev/null 2>&1
+
+  local rc=$?
+  [[ $rc -ne 0 ]] && { echo "   后台启动失败: $rc"; return 1; }
+
+  # bg.pid 应存在
+  [[ -f "$STATE_DIR/e2e_bg_01_bg.pid" ]] || { echo "   bg.pid 不存在"; return 1; }
+
+  # 查询状态（可能还在跑）
+  local status_output
+  status_output=$("$SCRIPT_DIR/delegate_to_claude.sh" --status --task-id "e2e_bg_01" 2>&1)
+  echo "$status_output" | grep -q "e2e_bg_01" || { echo "   --status 未返回任务信息"; return 1; }
+
+  # 等待完成（最多 15 秒）
+  local waited=0
+  while [[ $waited -lt 15 ]]; do
+    [[ -f "$STATE_DIR/e2e_bg_01_done.json" ]] && break
+    sleep 1
+    ((waited++))
+  done
+
+  [[ -f "$STATE_DIR/e2e_bg_01_done.json" ]] || { echo "   等待 ${waited}s 后仍无 done.json"; return 1; }
+
+  # 再次查状态 — 应显示"已结束"
+  status_output=$("$SCRIPT_DIR/delegate_to_claude.sh" --status --task-id "e2e_bg_01" 2>&1)
+  echo "$status_output" | grep -qE "已结束|完成信息" || { echo "   完成后状态显示异常"; return 1; }
+
+  return 0
+}
+
+test_e2e_verify_success() {
+  # 测试：verify_delivery.sh 在 mock 委托成功后能完整走通
+  local proj_dir
+  proj_dir=$(setup_test_project "e2e_verify")
+  local brief
+  brief=$(create_brief "$proj_dir")
+
+  rm -f "$STATE_DIR/lock.pid"
+
+  # 先跑一次前台委托
+  CLAUDE_BIN="$MOCK_CLAUDE" MOCK_MODE=success MOCK_DELAY=1 \
+    "$SCRIPT_DIR/delegate_to_claude.sh" \
+      --project-dir "$proj_dir" \
+      --task-id "e2e_verify_01" \
+      --task-brief "$brief" \
+      --timeout 30 >/dev/null 2>&1
+
+  # 跑 verify
+  local verify_output
+  set +e
+  verify_output=$("$SCRIPT_DIR/verify_delivery.sh" \
+    --project-dir "$proj_dir" \
+    --task-id "e2e_verify_01" 2>&1)
+  local verify_rc=$?
+  set -e
+
+  # verify 应该通过（退出码 0）
+  [[ $verify_rc -eq 0 ]] || { echo "   verify 退出码: $verify_rc (期望 0)"; echo "$verify_output" | tail -10; return 1; }
+
+  # 报告应包含"通过"
+  echo "$verify_output" | grep -q "验证结论：通过" || { echo "   verify 报告未包含'通过'"; return 1; }
+
+  # 报告文件应生成
+  [[ -f "$STATE_DIR/e2e_verify_01_verify_report.md" ]] || { echo "   verify_report.md 不存在"; return 1; }
+
+  return 0
+}
+
+test_e2e_timeout_recover() {
+  # 测试：超时场景 → crash_recover 给出 RETRY 建议
+  local proj_dir
+  proj_dir=$(setup_test_project "e2e_timeout")
+  local brief
+  brief=$(create_brief "$proj_dir")
+
+  rm -f "$STATE_DIR/lock.pid"
+
+  # 用 timeout 模式，设极短超时让它被 kill
+  set +e
+  CLAUDE_BIN="$MOCK_CLAUDE" MOCK_MODE=timeout MOCK_DELAY=0 \
+    "$SCRIPT_DIR/delegate_to_claude.sh" \
+      --project-dir "$proj_dir" \
+      --task-id "e2e_timeout_01" \
+      --task-brief "$brief" \
+      --timeout 3 >/dev/null 2>&1
+  local delegate_rc=$?
+  set -e
+
+  # 应返回退出码 4（超时）
+  [[ $delegate_rc -eq 4 ]] || { echo "   超时退出码: $delegate_rc (期望 4)"; return 1; }
+
+  # done.json 应包含 timeout 事件
+  [[ -f "$STATE_DIR/e2e_timeout_01_done.json" ]] || { echo "   超时后无 done.json"; return 1; }
+  grep -q "timeout" "$STATE_DIR/e2e_timeout_01_done.json" || { echo "   done.json 未记录 timeout"; return 1; }
+
+  # crash_recover 应建议 RETRY（退出码 2）— 因为无文件变更
+  set +e
+  "$SCRIPT_DIR/crash_recover.sh" \
+    --project-dir "$proj_dir" \
+    --task-id "e2e_timeout_01" \
+    --original-brief "$brief" >/dev/null 2>&1
+  local recover_rc=$?
+  set -e
+
+  [[ $recover_rc -eq 2 ]] || { echo "   crash_recover 退出码: $recover_rc (期望 2=RETRY)"; return 1; }
+
+  return 0
+}
+
+if [[ "$QUICK" != "true" ]]; then
+  echo ""
+  echo "━━━ 全链路集成测试 ━━━"
+  # 测试环境放宽 guard 限制（间隔 0 秒、每小时 100 次）
+  export DEV_DELEGATE_MIN_INTERVAL=0
+  export DEV_DELEGATE_MAX_CALLS_PER_HOUR=100
+  export DEV_DELEGATE_MAX_CALLS_PER_DAY=500
+  run_test "e2e_foreground"      "前台委托全链路"             test_e2e_foreground
+  run_test "e2e_bg_status"       "后台委托 + status 查询"     test_e2e_background_status
+  run_test "e2e_verify"          "verify 成功链路"            test_e2e_verify_success
+  run_test "e2e_timeout"         "超时 + crash_recover"       test_e2e_timeout_recover
+fi
 
 # 清理临时目录
 rm -rf "$TEST_BASE"
