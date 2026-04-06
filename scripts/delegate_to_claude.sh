@@ -243,14 +243,38 @@ run_claude_code() {
   local MONITOR_PID=$!
 
   # 实际调用 Claude Code
-  # 关键：使用 --permission-mode auto 而不是 --dangerously-skip-permissions
-  # 这样 Claude Code 自动批准已授权的操作，不会弹确认框
+  # 使用 cd 切换工作目录（兼容所有 CLI 版本），不依赖 --cwd
+  # 动态探测 CLI 支持的参数，不支持的跳过
+  local -a CLAUDE_ARGS=(-p "$PROMPT")
+
+  # --output-format
+  if "$CLAUDE_BIN" --help 2>&1 | grep -q '\-\-output-format'; then
+    CLAUDE_ARGS+=(--output-format text)
+  fi
+
+  # --permission-mode auto（无确认框）
+  if "$CLAUDE_BIN" --help 2>&1 | grep -q '\-\-permission-mode'; then
+    CLAUDE_ARGS+=(--permission-mode auto)
+  elif "$CLAUDE_BIN" --help 2>&1 | grep -q '\-\-dangerously-skip-permissions'; then
+    # 降级：旧版 CLI 只有这个选项
+    CLAUDE_ARGS+=(--dangerously-skip-permissions)
+  fi
+
+  # --allowedTools
+  if "$CLAUDE_BIN" --help 2>&1 | grep -q '\-\-allowedTools\|--allowed-tools'; then
+    CLAUDE_ARGS+=(--allowedTools "Read,Write,Edit,Bash,Grep,Glob")
+  fi
+
+  # --add-dir（替代不存在的 --cwd，确保 Claude 能访问项目目录）
+  if "$CLAUDE_BIN" --help 2>&1 | grep -q '\-\-add-dir'; then
+    CLAUDE_ARGS+=(--add-dir "$PROJECT_DIR")
+  fi
+
+  # 记录实际使用的参数（调试用）
+  echo "CLI 参数: ${CLAUDE_ARGS[*]}" > "$STATE_DIR/${TASK_ID}_cli_args.txt"
+
   set +e
-  timeout "${TIMEOUT}s" "$CLAUDE_BIN" -p "$PROMPT" \
-    --output-format text \
-    --permission-mode auto \
-    --allowedTools "Read,Write,Edit,Bash,Grep,Glob" \
-    --cwd "$PROJECT_DIR" \
+  (cd "$PROJECT_DIR" && timeout "${TIMEOUT}s" "$CLAUDE_BIN" "${CLAUDE_ARGS[@]}") \
     > "$OUTPUT_FILE" 2>"$STDERR_FILE"
   local EXIT_CODE=$?
   set -e
