@@ -274,13 +274,14 @@ BRIEFEOF
 
 fi
 
-} 2>&1 | tee "$RECOVER_REPORT"
+} > "$RECOVER_REPORT" 2>&1
 
+cat "$RECOVER_REPORT"
 echo ""
 echo "📄 崩溃分析报告: $RECOVER_REPORT"
 [[ -f "$RESUME_BRIEF" ]] && echo "📋 续接任务简报: $RESUME_BRIEF"
 
-# M-07 修复：根据决策返回不同退出码
+# 根据决策返回不同退出码
 case "$DECISION" in
   KEEP)         exit 0 ;;
   ROLLBACK)     exit 1 ;;
