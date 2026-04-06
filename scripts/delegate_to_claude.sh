@@ -229,7 +229,7 @@ ${BRIEF_CONTENT}
 if [[ "$BACKGROUND" != "true" ]]; then
   echo $$ > "$STATE_DIR/lock.pid"
 fi
-echo "{\"task_id\": \"$TASK_ID\", \"started_at\": \"$(date -Iseconds)\", \"pid\": $$}" > "$STATE_DIR/active_task.json"
+echo "{\"task_id\": \"$TASK_ID\", \"started_at\": \"$(date -Iseconds)\", \"pid\": $$, \"task_brief\": \"$TASK_BRIEF\", \"project_dir\": \"$PROJECT_DIR\"}" > "$STATE_DIR/active_task.json"
 
 # ─── 实际执行函数（前台和后台共用） ───
 run_claude_code() {
@@ -270,8 +270,13 @@ run_claude_code() {
     CLAUDE_ARGS+=(--add-dir "$PROJECT_DIR")
   fi
 
-  # 记录实际使用的参数（调试用）
-  echo "CLI 参数: ${CLAUDE_ARGS[*]}" > "$STATE_DIR/${TASK_ID}_cli_args.txt"
+  # 记录实际使用的参数开关（不含 prompt 内容）
+  printf "bin: %s\nargs:" "$CLAUDE_BIN" > "$STATE_DIR/${TASK_ID}_cli_args.txt"
+  for arg in "${CLAUDE_ARGS[@]}"; do
+    [[ "$arg" == "$PROMPT" ]] && continue
+    printf " %s" "$arg"
+  done >> "$STATE_DIR/${TASK_ID}_cli_args.txt"
+  echo "" >> "$STATE_DIR/${TASK_ID}_cli_args.txt"
 
   set +e
   (cd "$PROJECT_DIR" && timeout "${TIMEOUT}s" "$CLAUDE_BIN" "${CLAUDE_ARGS[@]}") \

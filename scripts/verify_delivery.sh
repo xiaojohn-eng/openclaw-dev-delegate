@@ -313,10 +313,14 @@ if [[ -n "$ACCEPTANCE_CMDS" && -f "$ACCEPTANCE_CMDS" ]]; then
     fi
   done < "$ACCEPTANCE_CMDS"
 else
-  # 尝试从任务简报中自动提取验收命令（bash 代码块内容）
-  TASK_BRIEF_FILE=$(find "$STATE_DIR" -name "${TASK_ID}*.md" -path "*/task_brief*" 2>/dev/null | head -1 || true)
-  if [[ -z "$TASK_BRIEF_FILE" ]]; then
-    TASK_BRIEF_FILE=$(find "$STATE_DIR" -name "*brief*" -newer "$STATE_DIR/active_task.json" 2>/dev/null | head -1 || true)
+  # 从 active_task.json 直接读取 task_brief 路径（不再 find 猜测）
+  TASK_BRIEF_FILE=""
+  if [[ -f "$STATE_DIR/active_task.json" ]]; then
+    TASK_BRIEF_FILE=$(python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('task_brief',''))" < "$STATE_DIR/active_task.json" 2>/dev/null || true)
+  fi
+  # fallback: 仍然尝试 find
+  if [[ -z "$TASK_BRIEF_FILE" || ! -f "$TASK_BRIEF_FILE" ]]; then
+    TASK_BRIEF_FILE=$(find "$STATE_DIR" -name "${TASK_ID}*.md" 2>/dev/null | head -1 || true)
   fi
 
   if [[ -n "$TASK_BRIEF_FILE" && -f "$TASK_BRIEF_FILE" ]]; then
