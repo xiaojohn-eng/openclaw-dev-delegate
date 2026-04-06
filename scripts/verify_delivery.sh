@@ -58,49 +58,53 @@ log_pass() { echo "  ✅ $1"; ((PASS_COUNT++)) || true; }
 log_fail() { echo "  ❌ $1"; ((FAIL_COUNT++)) || true; }
 log_warn() { echo "  ⚠️  $1"; ((WARN_COUNT++)) || true; }
 
-# ─── 测试命令白名单校验 ───
+# ─── 测试/验收命令安全校验 ───
+# 策略：先拒绝危险模式，再允许安全类别，未识别的放行但 log warning
 validate_test_cmd() {
   local cmd="$1"
-  # 允许的测试命令前缀白名单
-  local -a ALLOWED_PREFIXES=(
-    "python3 -m pytest"
-    "python -m pytest"
-    "pytest"
-    "npm test"
-    "npm run test"
-    "npx jest"
-    "npx vitest"
-    "go test"
-    "cargo test"
-    "make test"
-    "gradle test"
-    "mvn test"
-    "dotnet test"
-    "ruby -e"
-    "python3 -c"
-    "node -e"
-    "curl -sf"
-    "curl -s"
-    "wget -q"
-    "ls "
-    "cat "
-    "test "
-    "[ "
+
+  # 第一关：拒绝明确危险的命令/模式
+  if echo "$cmd" | grep -qE '(^rm |^dd |^mkfs|^chmod 777|^kill |^reboot|^shutdown|^systemctl|^mv /|^cp /dev)'; then
+    return 1
+  fi
+  # 拒绝 shell 元字符（管道、链接、子shell、重定向到文件）
+  if echo "$cmd" | grep -qE '(\|[^|]|;|&&|>\s*/|>>\s*/|\$\(|`.*`)'; then
+    return 1
+  fi
+
+  # 第二关：已知安全类别直接放行
+  local -a SAFE_PREFIXES=(
+    # 测试框架
+    "python3 -m pytest" "python -m pytest" "pytest" "python3 -m unittest"
+    "npm test" "npm run test" "npx jest" "npx vitest" "npx mocha"
+    "go test" "cargo test" "make test" "gradle test" "mvn test" "dotnet test"
+    "bundle exec rspec" "php artisan test" "mix test"
+    # 健康检查
+    "curl -sf" "curl -s" "curl --fail" "wget -q"
+    # 代码验证
+    "python3 -c" "python -c" "node -e" "ruby -e" "go run"
+    # 文件检查
+    "ls " "cat " "test " "[ " "stat " "wc " "head " "tail " "grep " "diff "
+    # 构建验证
+    "make " "npm run " "yarn " "pnpm " "go build" "cargo build" "cargo check"
+    "python3 -m " "pip " "pip3 "
+    # lint / type check
+    "eslint" "tsc " "mypy " "flake8" "ruff " "golangci-lint" "clippy"
   )
-  for prefix in "${ALLOWED_PREFIXES[@]}"; do
+  for prefix in "${SAFE_PREFIXES[@]}"; do
     if [[ "$cmd" == "$prefix"* ]]; then
       return 0
     fi
   done
-  # 拒绝危险命令
-  if echo "$cmd" | grep -qE '(rm |dd |mkfs|chmod 777|eval |exec |>|>>|\||;|&&|\$\()'; then
-    return 1
-  fi
-  # 未识别的命令，也拒绝
-  return 1
+
+  # 第三关：未识别但不含危险模式 → 放行并 warning
+  echo "  ⚠️  未识别的命令，放行执行: $cmd" >&2
+  return 0
 }
 
 # ─── 将所有输出写入报告文件（不使用管道，避免子shell问题） ───
+# 保存原始 stdout/stderr 的 fd（兼容无 tty 环境，如 OpenClaw 后台调用）
+exec 3>&1 4>&2
 exec > >(tee "$REPORT_FILE") 2>&1
 
 echo "# 验证报告：${TASK_ID}"
@@ -412,8 +416,8 @@ else
   echo "📋 失败反馈已包含在报告中，可直接作为续接任务简报的输入。"
 fi
 
-# 关闭 tee 重定向
-exec > /dev/tty 2>&1
+# 恢复原始 stdout/stderr（兼容无 tty 环境）
+exec 1>&3 2>&4 3>&- 4>&-
 
 echo ""
 echo "📄 完整报告已保存到: $REPORT_FILE"

@@ -85,20 +85,34 @@ print(int(last))
 " 2>/dev/null || echo 0
 }
 
+# ─── 辅助：列出真正的 claude CLI 进程（兼容 node 进程名） ───
+# claude CLI 可能以 "claude" 或 "node .../claude" 方式运行
+list_claude_processes() {
+  # 方法1: 直接匹配 claude 可执行文件
+  pgrep -x claude -a 2>/dev/null || true
+  # 方法2: 匹配 node 运行的 claude（覆盖 nvm/npm 全局安装场景）
+  pgrep -f "node.*bin/claude" 2>/dev/null | while read -r pid; do
+    local cmdline
+    cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
+    # 排除 grep 自身
+    [[ "$cmdline" == *"pgrep"* ]] && continue
+    echo "$pid $cmdline"
+  done
+}
+
 # ─── 检查 1：用户是否在使用 Claude Code ───
 check_user_active() {
-  # H-06 修复：使用精确匹配，避免匹配到 "vim CLAUDE.md" 等无关进程
-  # 检查是否有交互式 Claude Code 会话（非 -p 模式）
   local interactive_count=0
   while IFS= read -r line; do
-    # 跳过包含 -p 的（OpenClaw 调用的 pipe 模式）
+    [[ -z "$line" ]] && continue
+    # 跳过 pipe 模式（-p 参数 = OpenClaw 调用）
     [[ "$line" == *" -p "* ]] && continue
-    # 跳过脚本自身
+    # 跳过 dev-delegate 脚本自身
     [[ "$line" == *"delegate_to_claude"* ]] && continue
     [[ "$line" == *"monitor_claude"* ]] && continue
     [[ "$line" == *"subscription_guard"* ]] && continue
     ((interactive_count++)) || true
-  done < <(pgrep -x claude -a 2>/dev/null || true)
+  done < <(list_claude_processes)
 
   if [[ "$interactive_count" -gt 0 ]]; then
     echo "USER_ACTIVE"
@@ -110,11 +124,11 @@ check_user_active() {
 
 # ─── 检查 2：是否有其他 Claude Code 会话在跑 ───
 check_concurrent() {
-  # H-06 修复：使用 pgrep -x 精确匹配可执行文件名
   local claude_p_count=0
   while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
     [[ "$line" == *" -p "* ]] && ((claude_p_count++)) || true
-  done < <(pgrep -x claude -a 2>/dev/null || true)
+  done < <(list_claude_processes)
 
   if [[ "$claude_p_count" -gt 0 ]]; then
     echo "CONCURRENT_SESSION"

@@ -101,18 +101,19 @@ if [[ "$CHECK_STATUS" == "true" ]]; then
 
   echo "=== 任务状态：$TASK_ID ==="
 
-  # 检查后台进程是否还活着
+  # 检查进程状态（优先 bg.pid，fallback 到 lock.pid，�����复输出）
+  TASK_PID=""
+  TASK_RUNNING=false
   if [[ -f "$BG_PID_FILE" ]]; then
-    BG_PID=$(cat "$BG_PID_FILE")
-    if kill -0 "$BG_PID" 2>/dev/null; then
-      echo "📍 状态：运行中（PID: $BG_PID）"
-    else
-      echo "📍 状态：已结束"
-    fi
+    TASK_PID=$(cat "$BG_PID_FILE")
   elif [[ -f "$STATE_DIR/lock.pid" ]]; then
-    LOCK_PID=$(cat "$STATE_DIR/lock.pid")
-    if kill -0 "$LOCK_PID" 2>/dev/null; then
-      echo "📍 状态：运行中（PID: $LOCK_PID）"
+    TASK_PID=$(cat "$STATE_DIR/lock.pid")
+  fi
+
+  if [[ -n "$TASK_PID" ]]; then
+    if kill -0 "$TASK_PID" 2>/dev/null; then
+      echo "📍 状态：运行中（PID: $TASK_PID）"
+      TASK_RUNNING=true
     else
       echo "📍 状态：已结束"
     fi
@@ -120,28 +121,23 @@ if [[ "$CHECK_STATUS" == "true" ]]; then
     echo "📍 状态：未启动或已结束"
   fi
 
-  # 显示最近的监控日志
-  if [[ -f "$MONITOR_LOG" ]]; then
+  # 运行中才显示监控日志
+  if [[ "$TASK_RUNNING" == "true" && -f "$MONITOR_LOG" ]]; then
     echo ""
     echo "📊 最近进度："
-    tail -5 "$MONITOR_LOG"
+    tail -3 "$MONITOR_LOG"
   fi
 
-  # 如果已完成，显示结果摘要
-  if [[ -f "$OUTPUT_FILE" && -s "$OUTPUT_FILE" ]]; then
+  # 已结束才显示输出摘要（不重复显示监控+输出）
+  DONE_FILE="$STATE_DIR/${TASK_ID}_done.json"
+  if [[ "$TASK_RUNNING" == "false" && -f "$DONE_FILE" ]]; then
     echo ""
-    echo "📋 Claude Code 输出（最后 20 行）："
-    tail -20 "$OUTPUT_FILE"
-  fi
-
-  # 显示调用日志
-  if [[ -f "$CALL_LOG" ]]; then
-    TASK_LOG=$(grep "\"$TASK_ID\"" "$CALL_LOG" | tail -1)
-    if [[ -n "$TASK_LOG" ]]; then
-      echo ""
-      echo "📝 调用记录："
-      echo "$TASK_LOG" | python3 -m json.tool 2>/dev/null || echo "$TASK_LOG"
-    fi
+    echo "📋 完成信息："
+    python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(f'  退出码: {d.get(\"exit_code\",\"?\")}, 耗时: {d.get(\"duration\",\"?\")}s, 文件变动: {d.get(\"files_changed\",\"?\")}')" < "$DONE_FILE" 2>/dev/null || cat "$DONE_FILE"
+  elif [[ "$TASK_RUNNING" == "false" && -f "$OUTPUT_FILE" && -s "$OUTPUT_FILE" ]]; then
+    echo ""
+    echo "📋 输出摘要（最后 10 行）："
+    tail -10 "$OUTPUT_FILE"
   fi
 
   exit 0
@@ -188,9 +184,16 @@ echo "✅ 任务简报合格"
 echo "📸 拍摄环境快照（前）..."
 "$SCRIPT_DIR/env_snapshot.sh" --before --project-dir "$PROJECT_DIR" --task-id "$TASK_ID"
 
-# ─── Git Checkpoint ───
-echo "📸 创建 Git 快照..."
-"$SCRIPT_DIR/checkpoint.sh" --create --project-dir "$PROJECT_DIR" --label "before_${TASK_ID}"
+# ─── Git Checkpoint（非 git 项目降级为文件列表快照） ───
+if cd "$PROJECT_DIR" && git rev-parse --is-inside-work-tree &>/dev/null 2>&1; then
+  echo "📸 创建 Git 快照..."
+  "$SCRIPT_DIR/checkpoint.sh" --create --project-dir "$PROJECT_DIR" --label "before_${TASK_ID}"
+else
+  echo "⚠️  非 git 项目，降级为文件列表快照"
+  find "$PROJECT_DIR" -not -path '*/__pycache__/*' -not -path '*/node_modules/*' -type f \
+    -printf '%T@ %p\n' 2>/dev/null | sort -rn > "$STATE_DIR/${TASK_ID}_file_snapshot.txt"
+  echo "   已保存文件快照（$(wc -l < "$STATE_DIR/${TASK_ID}_file_snapshot.txt") 个文件）"
+fi
 
 # ─── 构建 Claude Code Prompt ───
 BRIEF_CONTENT=$(cat "$TASK_BRIEF")
@@ -263,9 +266,14 @@ run_claude_code() {
   local UNTRACKED=$(cd "$PROJECT_DIR" && git ls-files --others --exclude-standard 2>/dev/null | wc -l || echo 0)
   FILES_CHANGED=$((FILES_CHANGED + UNTRACKED))
 
-  # 提取 Claude Code 会话 ID
+  # 提取 Claude Code 会话 ID（按修改时间倒排，取调用期间内最新的 session 文件）
   local CLAUDE_SESSION_DIR="$HOME/.claude/projects"
-  local LATEST_SESSION=$(find "$CLAUDE_SESSION_DIR" -name "*.jsonl" -newer "$STATE_DIR/active_task.json" 2>/dev/null | head -1 || echo "unknown")
+  local LATEST_SESSION
+  LATEST_SESSION=$(find "$CLAUDE_SESSION_DIR" -name "*.jsonl" \
+    -newer "$STATE_DIR/active_task.json" \
+    -newermt "$(date -d "@$CALL_START" -Iseconds 2>/dev/null || echo '1970-01-01')" \
+    -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || echo "unknown")
+  [[ -z "$LATEST_SESSION" ]] && LATEST_SESSION="unknown"
 
   cat >> "$CALL_LOG" <<LOGEOF
 {"call_time":"$CALL_TIME","task_id":"$TASK_ID","duration_seconds":$DURATION,"exit_code":$EXIT_CODE,"success":$([ $EXIT_CODE -eq 0 ] && echo true || echo false),"files_changed":$FILES_CHANGED,"session_file":"$LATEST_SESSION","output_file":"$OUTPUT_FILE","mode":"$([ "$BACKGROUND" = true ] && echo background || echo foreground)"}
