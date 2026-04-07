@@ -125,8 +125,23 @@ cli_has() {
   grep -q "^${cap}=true" "$CLI_CAPS_CACHE" 2>/dev/null
 }
 
-# 执行探测
-detect_cli_capabilities
+# 延迟探测：仅非 --status 模式或无缓存时执行（避免 JSON 输出被污染）
+_needs_cli_detect=true
+for _arg in "$@"; do
+  if [[ "$_arg" == "--status" ]]; then
+    # status 模式下，仅在缓存不存在时静默探测
+    if [[ -f "$CLI_CAPS_CACHE" ]]; then
+      _needs_cli_detect=false
+    else
+      detect_cli_capabilities >/dev/null 2>&1
+      _needs_cli_detect=false
+    fi
+    break
+  fi
+done
+if [[ "$_needs_cli_detect" == "true" ]]; then
+  detect_cli_capabilities
+fi
 
 # ─── 参数解析 ───
 PROJECT_DIR=""
@@ -135,6 +150,7 @@ TASK_BRIEF=""
 TIMEOUT=$DEFAULT_TIMEOUT
 BACKGROUND=false
 CHECK_STATUS=false
+JSON_OUTPUT=false
 
 show_help() {
   cat <<'HELPEOF'
@@ -150,7 +166,7 @@ delegate_to_claude.sh — 标准化 Claude Code 调用脚本
     --project-dir DIR --task-id ID --task-brief FILE --background
 
   # 查询后台任务状态
-  ./delegate_to_claude.sh --status --task-id ID
+  ./delegate_to_claude.sh --status --task-id ID [--json]
 
 参数：
   --project-dir DIR    项目目录路径
@@ -159,6 +175,7 @@ delegate_to_claude.sh — 标准化 Claude Code 调用脚本
   --timeout SECONDS    超时时间（默认 1800）
   --background         后台模式
   --status             查询任务状态
+  --json               机器可读 JSON 输出（配合 --status 使用）
   -h, --help           显示此帮助信息
 
 退出码：
@@ -180,6 +197,7 @@ while [[ $# -gt 0 ]]; do
     --timeout)      TIMEOUT="$2"; shift 2 ;;
     --background)   BACKGROUND=true; shift ;;
     --status)       CHECK_STATUS=true; shift ;;
+    --json)         JSON_OUTPUT=true; shift ;;
     *) echo "❌ 未知参数: $1"; echo "使用 $0 --help 查看用法"; exit 1 ;;
   esac
 done
@@ -197,49 +215,111 @@ if [[ "$CHECK_STATUS" == "true" ]]; then
   OUTPUT_FILE="$STATE_DIR/${TASK_ID}_output.txt"
   BG_PID_FILE="$STATE_DIR/${TASK_ID}_bg.pid"
 
-  echo "=== 任务状态：$TASK_ID ==="
-
+  # ─── 状态枚举：RUNNING / COMPLETED / FAILED / TIMEOUT / INTERRUPTED / UNKNOWN ───
   # H-08 修复：完成标记优先于 PID 存活判断
-  # bg.pid 对应外层子shell可能在 done.json 写入后仍短暂存活
   DONE_FILE="$STATE_DIR/${TASK_ID}_done.json"
-  TASK_RUNNING=false
+  TASK_STATUS="UNKNOWN"
+  TASK_PID=""
+  TASK_EXIT_CODE=""
+  TASK_DURATION=""
+  TASK_FILES_CHANGED=""
+  TASK_TOKEN_VAL=""
+  TASK_HEARTBEAT=""
+
+  # 从 progress.json 读取最近心跳
+  if [[ -f "$PROGRESS_FILE" ]]; then
+    TASK_HEARTBEAT=$(python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('last_update',''))" < "$PROGRESS_FILE" 2>/dev/null || true)
+  fi
+
+  # 从 active_task.json 读取 task_token（仅 task_id 匹配时）
+  if [[ -f "$ACTIVE_FILE" ]]; then
+    TASK_TOKEN_VAL=$(python3 -c "
+import json,sys
+d=json.loads(sys.stdin.read())
+if d.get('task_id','') == sys.argv[1]:
+    print(d.get('task_token',''))
+else:
+    print('')
+" "$TASK_ID" < "$ACTIVE_FILE" 2>/dev/null || true)
+  fi
 
   if [[ -f "$DONE_FILE" ]]; then
     # done.json 存在即视为已完成，无论 PID 是否仍存活
-    echo "📍 状态：已结束"
+    TASK_EXIT_CODE=$(python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('exit_code','?'))" < "$DONE_FILE" 2>/dev/null || echo "?")
+    TASK_DURATION=$(python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('duration','?'))" < "$DONE_FILE" 2>/dev/null || echo "?")
+    TASK_FILES_CHANGED=$(python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('files_changed','?'))" < "$DONE_FILE" 2>/dev/null || echo "?")
+    TASK_TOKEN_VAL=$(python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('task_token',''))" < "$DONE_FILE" 2>/dev/null || echo "")
+
+    case "$TASK_EXIT_CODE" in
+      0)   TASK_STATUS="COMPLETED" ;;
+      124) TASK_STATUS="TIMEOUT" ;;
+      137|143) TASK_STATUS="INTERRUPTED" ;;
+      *)   TASK_STATUS="FAILED" ;;
+    esac
   else
-    TASK_PID=""
     if [[ -f "$BG_PID_FILE" ]]; then
       TASK_PID=$(cat "$BG_PID_FILE")
     elif [[ -f "$STATE_DIR/lock.pid" ]]; then
       TASK_PID=$(cat "$STATE_DIR/lock.pid")
     fi
 
-    if [[ -n "$TASK_PID" ]]; then
-      if kill -0 "$TASK_PID" 2>/dev/null; then
-        echo "📍 状态：运行中（PID: $TASK_PID）"
-        TASK_RUNNING=true
-      else
-        echo "📍 状态：已结束"
-      fi
-    else
-      echo "📍 状态：未启动或已结束"
+    if [[ -n "$TASK_PID" ]] && kill -0 "$TASK_PID" 2>/dev/null; then
+      TASK_STATUS="RUNNING"
+    elif [[ -n "$TASK_PID" ]]; then
+      TASK_STATUS="INTERRUPTED"
     fi
   fi
 
+  # ─── JSON 输出模式 ───
+  if [[ "$JSON_OUTPUT" == "true" ]]; then
+    python3 -c "
+import json, sys
+data = {
+    'task_id': sys.argv[1],
+    'status': sys.argv[2],
+    'task_token': sys.argv[3] or None,
+    'pid': int(sys.argv[4]) if sys.argv[4] else None,
+    'exit_code': int(sys.argv[5]) if sys.argv[5] not in ('', '?') else None,
+    'duration_seconds': int(sys.argv[6]) if sys.argv[6] not in ('', '?') else None,
+    'files_changed': int(sys.argv[7]) if sys.argv[7] not in ('', '?') else None,
+    'last_heartbeat': sys.argv[8] or None,
+}
+print(json.dumps(data, ensure_ascii=False, indent=2))
+" "$TASK_ID" "$TASK_STATUS" "$TASK_TOKEN_VAL" "$TASK_PID" "$TASK_EXIT_CODE" "$TASK_DURATION" "$TASK_FILES_CHANGED" "$TASK_HEARTBEAT"
+    exit 0
+  fi
+
+  # ─── 人类可读输出 ───
+  echo "=== 任务状态：$TASK_ID ==="
+  case "$TASK_STATUS" in
+    RUNNING)     echo "📍 状态：运行中（PID: $TASK_PID）[RUNNING]" ;;
+    COMPLETED)   echo "📍 状态：已完成 [COMPLETED]" ;;
+    FAILED)      echo "📍 状态：失败（退出码: $TASK_EXIT_CODE）[FAILED]" ;;
+    TIMEOUT)     echo "📍 状态：超时 [TIMEOUT]" ;;
+    INTERRUPTED) echo "📍 状态：中断 [INTERRUPTED]" ;;
+    *)           echo "📍 状态：未知 [UNKNOWN]" ;;
+  esac
+
+  if [[ -n "$TASK_TOKEN_VAL" ]]; then
+    echo "🔑 令牌：$TASK_TOKEN_VAL"
+  fi
+  if [[ -n "$TASK_HEARTBEAT" ]]; then
+    echo "💓 最近心跳：$TASK_HEARTBEAT"
+  fi
+
   # 运行中才显示监控日志
-  if [[ "$TASK_RUNNING" == "true" && -f "$MONITOR_LOG" ]]; then
+  if [[ "$TASK_STATUS" == "RUNNING" && -f "$MONITOR_LOG" ]]; then
     echo ""
     echo "📊 最近进度："
     tail -3 "$MONITOR_LOG"
   fi
 
   # 已结束才显示输出摘要（不重复显示监控+输出）
-  if [[ "$TASK_RUNNING" == "false" && -f "$DONE_FILE" ]]; then
+  if [[ "$TASK_STATUS" != "RUNNING" && "$TASK_STATUS" != "UNKNOWN" && -f "$DONE_FILE" ]]; then
     echo ""
     echo "📋 完成信息："
     python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(f'  退出码: {d.get(\"exit_code\",\"?\")}, 耗时: {d.get(\"duration\",\"?\")}s, 文件变动: {d.get(\"files_changed\",\"?\")}')" < "$DONE_FILE" 2>/dev/null || cat "$DONE_FILE"
-  elif [[ "$TASK_RUNNING" == "false" && -f "$OUTPUT_FILE" && -s "$OUTPUT_FILE" ]]; then
+  elif [[ "$TASK_STATUS" != "RUNNING" && -f "$OUTPUT_FILE" && -s "$OUTPUT_FILE" ]]; then
     echo ""
     echo "📋 输出摘要（最后 10 行）："
     tail -10 "$OUTPUT_FILE"

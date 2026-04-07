@@ -53,8 +53,26 @@ fi
 MONITOR_LOG="$STATE_DIR/${TASK_ID}_monitor.log"
 PROGRESS_FILE="$STATE_DIR/${TASK_ID}_progress.json"
 
-# 初始化进度文件
-echo '{"status":"running","checks":[],"last_update":"'"$(date -Iseconds)"'"}' > "$PROGRESS_FILE"
+# 读取 task_token（如有 active_task.json）
+TASK_TOKEN=""
+if [[ -f "$STATE_DIR/active_task.json" ]]; then
+  TASK_TOKEN=$(python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('task_token',''))" < "$STATE_DIR/active_task.json" 2>/dev/null || true)
+fi
+
+# 初始化进度文件（含 task_token、phase）
+python3 -c "
+import json, sys
+data = {
+    'status': 'running',
+    'task_id': sys.argv[1],
+    'task_token': sys.argv[2] or None,
+    'phase': 'executing',
+    'checks': [],
+    'started_at': sys.argv[3],
+    'last_update': sys.argv[3]
+}
+print(json.dumps(data, ensure_ascii=False, indent=2))
+" "$TASK_ID" "$TASK_TOKEN" "$(date -Iseconds)" > "$PROGRESS_FILE"
 
 log_progress() {
   local msg="$1"

@@ -343,6 +343,7 @@ test_help_flags() {
     checkpoint.sh
     task_brief_validator.sh
     subscription_guard.sh
+    selfcheck.sh
   )
   local failed=0
   for script in "${scripts[@]}"; do
@@ -367,12 +368,40 @@ test_help_flags() {
   [[ $failed -eq 0 ]]
 }
 
+test_selfcheck() {
+  # 测试：selfcheck 能正常运行并输出检查结果
+  local output
+  output=$("$SCRIPT_DIR/selfcheck.sh" 2>&1)
+  echo "$output" | grep -q "自检完成"
+}
+
+test_selfcheck_json() {
+  # 测试：selfcheck --json 输出合法 JSON
+  local output
+  output=$("$SCRIPT_DIR/selfcheck.sh" --json 2>&1)
+  echo "$output" | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'ok' in d and 'checks' in d" 2>/dev/null
+}
+
+test_status_json() {
+  # 测试：--status --json 输出合法 JSON（无任务时应返回 UNKNOWN）
+  local output
+  output=$("$SCRIPT_DIR/delegate_to_claude.sh" --status --task-id "nonexistent_test_$$" --json 2>&1)
+  echo "$output" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['status'] == 'UNKNOWN' and d['task_id'].startswith('nonexistent_test_')" 2>/dev/null
+}
+
+test_startup_json() {
+  # 测试：startup_check --json 输出合法 JSON
+  local output
+  output=$("$SCRIPT_DIR/startup_check.sh" --json 2>&1)
+  echo "$output" | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'summary' in d and 'tasks' in d" 2>/dev/null
+}
+
 # ═══════════════════════════════════════
 #  执行
 # ═══════════════════════════════════════
 
 echo "╔═══════════════════════════════════════╗"
-echo "║   dev-delegate 回归测试 v1.1          ║"
+echo "║   dev-delegate 回归测试 v1.2          ║"
 echo "║   $(date '+%Y-%m-%d %H:%M:%S')                  ║"
 echo "╚═══════════════════════════════════════╝"
 
@@ -391,6 +420,10 @@ run_test "concurrent_guard"    "并发保护拦截生效"           test_concurr
 run_test "stale_lock"          "过期锁自动清理"             test_stale_lock_cleanup
 run_test "cli_caps"            "CLI 能力探测"               test_cli_caps_cache
 run_test "verify_whitelist"    "验证命令白名单准确"         test_verify_whitelist
+run_test "selfcheck"           "版本/依赖自检正常"           test_selfcheck
+run_test "selfcheck_json"      "自检 JSON 输出有效"          test_selfcheck_json
+run_test "status_json"         "状态查询 JSON 输出有效"      test_status_json
+run_test "startup_json"        "启动自检 JSON 输出有效"      test_startup_json
 
 # ═══════════════════════════════════════
 #  全链路集成测试（使用 mock claude）

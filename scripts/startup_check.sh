@@ -18,6 +18,8 @@ SKILL_DIR="$(dirname "$SCRIPT_DIR")"
 STATE_DIR="$SKILL_DIR/state"
 mkdir -p "$STATE_DIR"
 
+JSON_OUTPUT=false
+
 show_help() {
   cat <<'HELPEOF'
 startup_check.sh — OpenClaw 启动时自检
@@ -26,24 +28,33 @@ startup_check.sh — OpenClaw 启动时自检
   ./startup_check.sh              # 检查所有任务状态
   ./startup_check.sh --cleanup    # 清理已确认的过期状态
   ./startup_check.sh --check      # 同默认行为
+  ./startup_check.sh --json       # JSON 格式输出（机器可读）
 
 参数：
   --check        检查任务状态（默认）
   --cleanup      清理过期状态
+  --json         以 JSON 格式输出任务状态列表
   -h, --help     显示此帮助信息
 HELPEOF
   exit 0
 }
 
-case "${1:-}" in
-  -h|--help) show_help ;;
-esac
+ACTION="--check"
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help) show_help ;;
+    --json) JSON_OUTPUT=true ;;
+    --cleanup|--check) ACTION="$arg" ;;
+  esac
+done
 
-ACTION="${1:---check}"
+JSON_TASKS=()  # 收集 JSON 任务对象
 
-echo "=== dev-delegate 启动自检 ==="
-echo "时间: $(date -Iseconds)"
-echo ""
+if [[ "$JSON_OUTPUT" != "true" ]]; then
+  echo "=== dev-delegate 启动自检 ==="
+  echo "时间: $(date -Iseconds)"
+  echo ""
+fi
 
 RUNNING=0
 COMPLETED_UNREPORTED=0
@@ -60,10 +71,13 @@ for bg_pid_file in "$STATE_DIR"/*_bg.pid; do
 
   if kill -0 "$BG_PID" 2>/dev/null; then
     # 进程还活着
-    echo "🔵 运行中: $TASK_ID (PID: $BG_PID)"
     MONITOR_LOG="$STATE_DIR/${TASK_ID}_monitor.log"
-    if [[ -f "$MONITOR_LOG" ]]; then
-      echo "   最近状态: $(tail -1 "$MONITOR_LOG")"
+    JSON_TASKS+=("{\"task_id\":\"$TASK_ID\",\"status\":\"RUNNING\",\"pid\":$BG_PID}")
+    if [[ "$JSON_OUTPUT" != "true" ]]; then
+      echo "🔵 运行中: $TASK_ID (PID: $BG_PID)"
+      if [[ -f "$MONITOR_LOG" ]]; then
+        echo "   最近状态: $(tail -1 "$MONITOR_LOG")"
+      fi
     fi
     ((RUNNING++))
 
@@ -73,27 +87,36 @@ for bg_pid_file in "$STATE_DIR"/*_bg.pid; do
     EXIT_CODE=$(python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('exit_code',99))" < "$DONE_FILE" 2>/dev/null || echo "?")
 
     if [[ "$EXIT_CODE" == "0" ]]; then
-      echo "🟡 已完成但未汇报: $TASK_ID"
-      echo "   完成信息: $DONE_INFO"
-      echo "   👉 请执行 verify_delivery.sh 验证并汇报用户"
+      JSON_TASKS+=("{\"task_id\":\"$TASK_ID\",\"status\":\"COMPLETED\",\"exit_code\":0}")
+      if [[ "$JSON_OUTPUT" != "true" ]]; then
+        echo "🟡 已完成但未汇报: $TASK_ID"
+        echo "   完成信息: $DONE_INFO"
+        echo "   👉 请执行 verify_delivery.sh 验证并汇报用户"
+      fi
       ((COMPLETED_UNREPORTED++))
     else
-      echo "🔴 异常完成: $TASK_ID (退出码: $EXIT_CODE)"
-      if [[ -f "$STATE_DIR/${TASK_ID}_stderr.txt" ]]; then
-        echo "   错误: $(tail -3 "$STATE_DIR/${TASK_ID}_stderr.txt")"
+      JSON_TASKS+=("{\"task_id\":\"$TASK_ID\",\"status\":\"FAILED\",\"exit_code\":$EXIT_CODE}")
+      if [[ "$JSON_OUTPUT" != "true" ]]; then
+        echo "🔴 异常完成: $TASK_ID (退出码: $EXIT_CODE)"
+        if [[ -f "$STATE_DIR/${TASK_ID}_stderr.txt" ]]; then
+          echo "   错误: $(tail -3 "$STATE_DIR/${TASK_ID}_stderr.txt")"
+        fi
       fi
       ((CRASHED++))
     fi
 
   else
     # 进程已结束，无完成标记 → 崩溃
-    echo "🔴 异常中断: $TASK_ID (PID $BG_PID 已不存在)"
-    if [[ -f "$OUTPUT_FILE" && -s "$OUTPUT_FILE" ]]; then
-      OUTPUT_SIZE=$(stat -c%s "$OUTPUT_FILE" 2>/dev/null || echo 0)
-      echo "   部分输出: ${OUTPUT_SIZE} bytes"
-      echo "   👉 可尝试 crash_recover.sh 断点续接"
-    else
-      echo "   无输出，可能刚启动就失败了"
+    JSON_TASKS+=("{\"task_id\":\"$TASK_ID\",\"status\":\"INTERRUPTED\",\"pid\":$BG_PID}")
+    if [[ "$JSON_OUTPUT" != "true" ]]; then
+      echo "🔴 异常中断: $TASK_ID (PID $BG_PID 已不存在)"
+      if [[ -f "$OUTPUT_FILE" && -s "$OUTPUT_FILE" ]]; then
+        OUTPUT_SIZE=$(stat -c%s "$OUTPUT_FILE" 2>/dev/null || echo 0)
+        echo "   部分输出: ${OUTPUT_SIZE} bytes"
+        echo "   👉 可尝试 crash_recover.sh 断点续接"
+      else
+        echo "   无输出，可能刚启动就失败了"
+      fi
     fi
     ((CRASHED++))
   fi
@@ -110,8 +133,10 @@ if [[ -f "$STATE_DIR/lock.pid" ]]; then
       LOCK_AGE_SEC=$(( $(date +%s) - LOCK_MTIME ))
       LOCK_AGE="$(( LOCK_AGE_SEC / 60 ))分钟前"
     fi
-    echo ""
-    echo "⚠️ 发现过期锁文件 (PID: $LOCK_PID 已不存在, 创建于${LOCK_AGE:-未知})"
+    if [[ "$JSON_OUTPUT" != "true" ]]; then
+      echo ""
+      echo "⚠️ 发现过期锁文件 (PID: $LOCK_PID 已不存在, 创建于${LOCK_AGE:-未知})"
+    fi
     STALE_LOCK=true
     ((STALE++))
   fi
@@ -142,6 +167,26 @@ if [[ "$ACTION" == "--cleanup" ]] || [[ "$STALE_LOCK" == "true" ]]; then
   fi
 
   echo "   ✅ 清理完成"
+fi
+
+# ─── JSON 输出模式 ───
+if [[ "$JSON_OUTPUT" == "true" ]]; then
+  python3 -c "
+import json, sys
+tasks = [json.loads(t) for t in sys.argv[1:]]
+result = {
+    'timestamp': '$(date -Iseconds)',
+    'summary': {
+        'running': $RUNNING,
+        'completed_unreported': $COMPLETED_UNREPORTED,
+        'crashed': $CRASHED,
+        'stale_locks': $STALE
+    },
+    'tasks': tasks
+}
+print(json.dumps(result, ensure_ascii=False, indent=2))
+" ${JSON_TASKS[@]+"${JSON_TASKS[@]}"}
+  exit 0
 fi
 
 # ─── 汇总 ───

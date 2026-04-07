@@ -191,9 +191,34 @@ if command -v git &>/dev/null && git rev-parse --is-inside-work-tree &>/dev/null
   CHANGE_COUNT=$(echo "$ALL_CHANGES" | sed '/^$/d' | wc -l)
 
   if [[ $CHANGE_COUNT -gt 0 ]]; then
-    log_pass "检测到 ${CHANGE_COUNT} 个文件变更"
-    echo "  变更文件列表："
-    echo "$ALL_CHANGES" | sed 's/^/    - /'
+    # 分类：用户交付文件 vs 技能辅助状态文件
+    USER_FILES=""
+    INTERNAL_FILES=""
+    while IFS= read -r f; do
+      [[ -z "$f" ]] && continue
+      case "$f" in
+        .dev-delegate-status.md|.dev-delegate-*|state/*|*/state/*)
+          INTERNAL_FILES="${INTERNAL_FILES}${f}"$'\n'
+          ;;
+        *)
+          USER_FILES="${USER_FILES}${f}"$'\n'
+          ;;
+      esac
+    done <<< "$ALL_CHANGES"
+
+    USER_COUNT=$(echo "$USER_FILES" | sed '/^$/d' | wc -l)
+    INTERNAL_COUNT=$(echo "$INTERNAL_FILES" | sed '/^$/d' | wc -l)
+
+    log_pass "检测到 ${CHANGE_COUNT} 个文件变更（用户交付: ${USER_COUNT}, 辅助状态: ${INTERNAL_COUNT}）"
+
+    if [[ $USER_COUNT -gt 0 ]]; then
+      echo "  📦 用户交付文件："
+      echo "$USER_FILES" | sed '/^$/d' | sed 's/^/    - /'
+    fi
+    if [[ $INTERNAL_COUNT -gt 0 ]]; then
+      echo "  🔧 技能辅助状态文件（非交付产物）："
+      echo "$INTERNAL_FILES" | sed '/^$/d' | sed 's/^/    - /'
+    fi
   else
     log_warn "未检测到 git 变更（可能已被提交或无实际改动）"
   fi
