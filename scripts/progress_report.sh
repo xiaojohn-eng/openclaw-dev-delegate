@@ -26,13 +26,33 @@ TASK_ID=""
 PHASE=""
 NEXT_PHASE=""
 
+show_help() {
+  cat <<'HELPEOF'
+progress_report.sh — 证据链汇报生成
+
+用法：
+  ./progress_report.sh \
+    --project-dir DIR --task-id ID \
+    --phase "阶段名称" [--next-phase "下一阶段"]
+
+参数：
+  --project-dir DIR    项目目录路径
+  --task-id ID         任务唯一标识
+  --phase NAME         当前阶段名称
+  --next-phase NAME    下一阶段名称（可选）
+  -h, --help           显示此帮助信息
+HELPEOF
+  exit 0
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -h|--help)     show_help ;;
     --project-dir) PROJECT_DIR="$2"; shift 2 ;;
     --task-id)     TASK_ID="$2"; shift 2 ;;
     --phase)       PHASE="$2"; shift 2 ;;
     --next-phase)  NEXT_PHASE="$2"; shift 2 ;;
-    *) shift ;;
+    *) echo "❌ 未知参数: $1"; echo "使用 $0 --help 查看用法"; exit 1 ;;
   esac
 done
 

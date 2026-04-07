@@ -14,15 +14,37 @@ PROJECT_DIR=""
 LABEL=""
 FORCE=false
 
+show_help() {
+  cat <<'HELPEOF'
+checkpoint.sh — Git 快照管理
+
+用法：
+  ./checkpoint.sh --create --project-dir DIR --label LABEL
+  ./checkpoint.sh --rollback --project-dir DIR [--force]
+  ./checkpoint.sh --list --project-dir DIR
+
+参数：
+  --create           创建快照
+  --rollback         回滚到最近的快照
+  --list             列出所有快照
+  --project-dir DIR  项目目录路径
+  --label LABEL      快照标签
+  --force            确认执行回滚（不可逆操作）
+  -h, --help         显示此帮助信息
+HELPEOF
+  exit 0
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -h|--help)     show_help ;;
     --create)      ACTION="create"; shift ;;
     --rollback)    ACTION="rollback"; shift ;;
     --list)        ACTION="list"; shift ;;
     --project-dir) PROJECT_DIR="$2"; shift 2 ;;
     --label)       LABEL="$2"; shift 2 ;;
     --force)       FORCE=true; shift ;;
-    *) shift ;;
+    *) echo "❌ 未知参数: $1"; echo "使用 $0 --help 查看用法"; exit 1 ;;
   esac
 done
 

@@ -31,12 +31,37 @@ PROJECT_DIR=""
 TASK_ID=""
 ORIGINAL_BRIEF=""
 
+show_help() {
+  cat <<'HELPEOF'
+crash_recover.sh — Claude Code 崩溃后的断点续接
+
+用法：
+  ./crash_recover.sh \
+    --project-dir DIR --task-id ID \
+    --original-brief FILE
+
+参数：
+  --project-dir DIR       项目目录路径
+  --task-id ID            任务唯一标识
+  --original-brief FILE   原始任务简报文件
+  -h, --help              显示此帮助信息
+
+退出码：
+  0 = KEEP（保留半成品，续接完成）
+  1 = ROLLBACK（建议回滚）
+  2 = RETRY（直接重试）
+  3 = KEEP_AND_FIX（保留但需修复）
+HELPEOF
+  exit 0
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -h|--help)         show_help ;;
     --project-dir)     PROJECT_DIR="$2"; shift 2 ;;
     --task-id)         TASK_ID="$2"; shift 2 ;;
     --original-brief)  ORIGINAL_BRIEF="$2"; shift 2 ;;
-    *) shift ;;
+    *) echo "❌ 未知参数: $1"; echo "使用 $0 --help 查看用法"; exit 1 ;;
   esac
 done
 

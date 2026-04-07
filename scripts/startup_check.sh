@@ -18,6 +18,27 @@ SKILL_DIR="$(dirname "$SCRIPT_DIR")"
 STATE_DIR="$SKILL_DIR/state"
 mkdir -p "$STATE_DIR"
 
+show_help() {
+  cat <<'HELPEOF'
+startup_check.sh — OpenClaw 启动时自检
+
+用法：
+  ./startup_check.sh              # 检查所有任务状态
+  ./startup_check.sh --cleanup    # 清理已确认的过期状态
+  ./startup_check.sh --check      # 同默认行为
+
+参数：
+  --check        检查任务状态（默认）
+  --cleanup      清理过期状态
+  -h, --help     显示此帮助信息
+HELPEOF
+  exit 0
+}
+
+case "${1:-}" in
+  -h|--help) show_help ;;
+esac
+
 ACTION="${1:---check}"
 
 echo "=== dev-delegate 启动自检 ==="

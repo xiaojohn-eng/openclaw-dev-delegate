@@ -36,6 +36,38 @@ MIN_INTERVAL_SECONDS="${DEV_DELEGATE_MIN_INTERVAL:-30}"
 # 用户活跃检查策略：默认不检查（允许并行），设 STRICT=1 才启用
 STRICT_USER_CHECK="${DEV_DELEGATE_STRICT_USER_CHECK:-0}"
 
+show_help() {
+  cat <<'HELPEOF'
+subscription_guard.sh — 订阅配额保护脚本
+
+用法：
+  ./subscription_guard.sh --check    # 检查是否可以调用
+  ./subscription_guard.sh --status   # 查看当前配额状态
+  ./subscription_guard.sh --wait     # 等待直到可以调用
+
+参数：
+  --check      检查是否可以调用（默认）
+  --status     查看配额状态
+  --wait       等待条件满足
+  -h, --help   显示此帮助信息
+
+环境变量：
+  DEV_DELEGATE_STRICT_USER_CHECK=1  强制启用用户活跃检查
+  DEV_DELEGATE_MAX_CALLS_PER_HOUR   每小时最大调用次数（默认 10）
+  DEV_DELEGATE_MAX_CALLS_PER_DAY    每天最大调用次数（默认 50）
+  DEV_DELEGATE_MIN_INTERVAL         最小调用间隔秒数（默认 30）
+
+退出码：
+  0 = 可以调用
+  1 = 不可以调用
+HELPEOF
+  exit 0
+}
+
+case "${1:-}" in
+  -h|--help) show_help ;;
+esac
+
 ACTION="${1:---check}"
 
 # ─── 工具函数 ───

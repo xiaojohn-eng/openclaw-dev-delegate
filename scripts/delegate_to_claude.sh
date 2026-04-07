@@ -136,15 +136,51 @@ TIMEOUT=$DEFAULT_TIMEOUT
 BACKGROUND=false
 CHECK_STATUS=false
 
+show_help() {
+  cat <<'HELPEOF'
+delegate_to_claude.sh — 标准化 Claude Code 调用脚本
+
+用法：
+  # 前台模式（阻塞等待完成）
+  ./delegate_to_claude.sh \
+    --project-dir DIR --task-id ID --task-brief FILE [--timeout 600]
+
+  # 后台模式（立即返回）
+  ./delegate_to_claude.sh \
+    --project-dir DIR --task-id ID --task-brief FILE --background
+
+  # 查询后台任务状态
+  ./delegate_to_claude.sh --status --task-id ID
+
+参数：
+  --project-dir DIR    项目目录路径
+  --task-id ID         任务唯一标识
+  --task-brief FILE    任务简报文件路径（.md）
+  --timeout SECONDS    超时时间（默认 1800）
+  --background         后台模式
+  --status             查询任务状态
+  -h, --help           显示此帮助信息
+
+退出码：
+  0 = 成功（前台）/ 已启动（后台）
+  1 = 参数错误
+  2 = 前置检查失败
+  3 = Claude Code 调用失败
+  4 = 超时
+HELPEOF
+  exit 0
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -h|--help)      show_help ;;
     --project-dir)  PROJECT_DIR="$2"; shift 2 ;;
     --task-id)      TASK_ID="$2"; shift 2 ;;
     --task-brief)   TASK_BRIEF="$2"; shift 2 ;;
     --timeout)      TIMEOUT="$2"; shift 2 ;;
     --background)   BACKGROUND=true; shift ;;
     --status)       CHECK_STATUS=true; shift ;;
-    *) echo "未知参数: $1"; exit 1 ;;
+    *) echo "❌ 未知参数: $1"; echo "使用 $0 --help 查看用法"; exit 1 ;;
   esac
 done
 

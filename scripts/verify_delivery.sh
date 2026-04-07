@@ -33,14 +33,41 @@ CLAIMED_FILES=""
 TEST_CMD=""
 ACCEPTANCE_CMDS=""  # 自动验收命令文件
 
+show_help() {
+  cat <<'HELPEOF'
+verify_delivery.sh — 产出验证脚本
+
+用法：
+  ./verify_delivery.sh \
+    --project-dir DIR --task-id ID \
+    [--claimed-files file1.py,file2.py] \
+    [--test-cmd "python3 -m pytest"] \
+    [--acceptance-cmds FILE]
+
+参数：
+  --project-dir DIR         项目目录路径
+  --task-id ID              任务唯一标识
+  --claimed-files FILES     声称修改的文件（逗号分隔）
+  --test-cmd CMD            测试命令
+  --acceptance-cmds FILE    验收命令文件
+  -h, --help                显示此帮助信息
+
+退出码：
+  0 = 全部验证通过
+  1 = 有验证项失败
+HELPEOF
+  exit 0
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -h|--help)          show_help ;;
     --project-dir)      PROJECT_DIR="$2"; shift 2 ;;
     --task-id)          TASK_ID="$2"; shift 2 ;;
     --claimed-files)    CLAIMED_FILES="$2"; shift 2 ;;
     --test-cmd)         TEST_CMD="$2"; shift 2 ;;
     --acceptance-cmds)  ACCEPTANCE_CMDS="$2"; shift 2 ;;
-    *) echo "未知参数: $1"; exit 1 ;;
+    *) echo "❌ 未知参数: $1"; echo "使用 $0 --help 查看用法"; exit 1 ;;
   esac
 done
 

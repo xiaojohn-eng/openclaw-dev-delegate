@@ -18,12 +18,31 @@ INTERVAL=30  # 每 30 秒检查一次
 PROJECT_DIR=""
 TASK_ID=""
 
+show_help() {
+  cat <<'HELPEOF'
+monitor_claude.sh — Claude Code 会话实时监控
+
+用法：
+  ./monitor_claude.sh --project-dir DIR --task-id ID [--interval 30]
+
+参数：
+  --project-dir DIR  项目目录路径
+  --task-id ID       任务唯一标识
+  --interval SECS    检查间隔（默认 30 秒）
+  -h, --help         显示此帮助信息
+
+通常由 delegate_to_claude.sh 自动启动，以后台进程运行。
+HELPEOF
+  exit 0
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -h|--help)     show_help ;;
     --project-dir) PROJECT_DIR="$2"; shift 2 ;;
     --task-id)     TASK_ID="$2"; shift 2 ;;
     --interval)    INTERVAL="$2"; shift 2 ;;
-    *) shift ;;
+    *) echo "❌ 未知参数: $1"; echo "使用 $0 --help 查看用法"; exit 1 ;;
   esac
 done
 

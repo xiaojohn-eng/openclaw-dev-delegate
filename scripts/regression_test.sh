@@ -21,11 +21,33 @@ MOCK_CLAUDE="$SCRIPT_DIR/mock_claude.sh"
 QUICK=false
 SINGLE_TEST=""
 
+show_help() {
+  cat <<'HELPEOF'
+regression_test.sh — dev-delegate 回归测试
+
+用法：
+  ./regression_test.sh              # 全量回归
+  ./regression_test.sh --quick      # 只跑快速测试（不含后台/超时）
+  ./regression_test.sh --test NAME  # 只跑指定测试
+
+参数：
+  --quick        只跑快速测试
+  --test NAME    只跑指定名称的测试
+  -h, --help     显示此帮助信息
+
+退出码：
+  0 = 全部通过
+  1 = 有测试失败
+HELPEOF
+  exit 0
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -h|--help)  show_help ;;
     --quick)  QUICK=true; shift ;;
     --test)   SINGLE_TEST="$2"; shift 2 ;;
-    *) echo "未知参数: $1"; exit 1 ;;
+    *) echo "❌ 未知参数: $1"; echo "使用 $0 --help 查看用法"; exit 1 ;;
   esac
 done
 
@@ -300,18 +322,57 @@ test_verify_whitelist() {
   return 0
 }
 
+test_help_flags() {
+  # 测试：所有脚本的 -h 和 --help 输出帮助信息且退出码为 0
+  local scripts=(
+    delegate_to_claude.sh
+    verify_delivery.sh
+    regression_test.sh
+    startup_check.sh
+    env_snapshot.sh
+    crash_recover.sh
+    monitor_claude.sh
+    progress_report.sh
+    checkpoint.sh
+    task_brief_validator.sh
+    subscription_guard.sh
+  )
+  local failed=0
+  for script in "${scripts[@]}"; do
+    local script_path="$SCRIPT_DIR/$script"
+    [[ ! -f "$script_path" ]] && { echo "   脚本不存在: $script"; ((failed++)); continue; }
+
+    for flag in -h --help; do
+      local output rc
+      set +e
+      output=$("$script_path" "$flag" 2>&1)
+      rc=$?
+      set -e
+      if [[ $rc -ne 0 ]]; then
+        echo "   $script $flag 退出码 $rc (期望 0)"
+        ((failed++))
+      elif ! echo "$output" | grep -qiE '用法|usage|参数'; then
+        echo "   $script $flag 未输出帮助信息"
+        ((failed++))
+      fi
+    done
+  done
+  [[ $failed -eq 0 ]]
+}
+
 # ═══════════════════════════════════════
 #  执行
 # ═══════════════════════════════════════
 
 echo "╔═══════════════════════════════════════╗"
-echo "║   dev-delegate 回归测试 v1.0          ║"
+echo "║   dev-delegate 回归测试 v1.1          ║"
 echo "║   $(date '+%Y-%m-%d %H:%M:%S')                  ║"
 echo "╚═══════════════════════════════════════╝"
 
 mkdir -p "$TEST_BASE"
 
 # 基础测试（快速）
+run_test "help_flags"          "所有脚本 -h/--help 输出帮助"  test_help_flags
 run_test "startup_check"       "启动自检正常运行"          test_startup_check
 run_test "brief_pass"          "合格任务简报通过校验"       test_brief_validator_pass
 run_test "brief_fail"          "不合格任务简报被拒绝"       test_brief_validator_fail

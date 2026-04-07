@@ -17,6 +17,28 @@ if ! command -v python3 &>/dev/null; then
   exit 1
 fi
 
+show_help() {
+  cat <<'HELPEOF'
+task_brief_validator.sh — 任务简报质量校验
+
+用法：
+  ./task_brief_validator.sh <task_brief.md>
+
+参数：
+  <task_brief.md>    待校验的任务简报文件
+  -h, --help         显示此帮助信息
+
+退出码：
+  0 = 合格
+  1 = 不合格（附带缺失项）
+HELPEOF
+  exit 0
+}
+
+case "${1:-}" in
+  -h|--help) show_help ;;
+esac
+
 BRIEF_FILE="${1:-}"
 
 if [[ -z "$BRIEF_FILE" || ! -f "$BRIEF_FILE" ]]; then

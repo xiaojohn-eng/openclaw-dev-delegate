@@ -17,14 +17,35 @@ ACTION=""
 PROJECT_DIR=""
 TASK_ID=""
 
+show_help() {
+  cat <<'HELPEOF'
+env_snapshot.sh — 环境快照对比
+
+用法：
+  ./env_snapshot.sh --before --project-dir DIR --task-id ID
+  ./env_snapshot.sh --after  --project-dir DIR --task-id ID
+  ./env_snapshot.sh --diff   --task-id ID
+
+参数：
+  --before           拍摄执行前快照
+  --after            拍摄执行后快照
+  --diff             对比前后快照
+  --project-dir DIR  项目目录路径
+  --task-id ID       任务唯一标识
+  -h, --help         显示此帮助信息
+HELPEOF
+  exit 0
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -h|--help)     show_help ;;
     --before)      ACTION="before"; shift ;;
     --after)       ACTION="after"; shift ;;
     --diff)        ACTION="diff"; shift ;;
     --project-dir) PROJECT_DIR="$2"; shift 2 ;;
     --task-id)     TASK_ID="$2"; shift 2 ;;
-    *) shift ;;
+    *) echo "❌ 未知参数: $1"; echo "使用 $0 --help 查看用法"; exit 1 ;;
   esac
 done
 
