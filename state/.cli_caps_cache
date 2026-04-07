@@ -1,11 +1,11 @@
-2.1.92 (Claude Code)
+mock-claude 1.0.0 (regression test)
 output_format=true
 permission_mode=true
-skip_permissions=true
+skip_permissions=false
 allowed_tools=true
 add_dir=true
-cwd=false
+cwd=true
 max_turns=false
-model=true
-verbose=true
-detected_at=2026-04-07T09:22:07+08:00
+model=false
+verbose=false
+detected_at=2026-04-07T09:27:06+08:00
