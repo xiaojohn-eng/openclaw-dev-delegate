@@ -163,24 +163,32 @@ if [[ "$CHECK_STATUS" == "true" ]]; then
 
   echo "=== 任务状态：$TASK_ID ==="
 
-  # 检查进程状态（优先 bg.pid，fallback 到 lock.pid，�����复输出）
-  TASK_PID=""
+  # H-08 修复：完成标记优先于 PID 存活判断
+  # bg.pid 对应外层子shell可能在 done.json 写入后仍短暂存活
+  DONE_FILE="$STATE_DIR/${TASK_ID}_done.json"
   TASK_RUNNING=false
-  if [[ -f "$BG_PID_FILE" ]]; then
-    TASK_PID=$(cat "$BG_PID_FILE")
-  elif [[ -f "$STATE_DIR/lock.pid" ]]; then
-    TASK_PID=$(cat "$STATE_DIR/lock.pid")
-  fi
 
-  if [[ -n "$TASK_PID" ]]; then
-    if kill -0 "$TASK_PID" 2>/dev/null; then
-      echo "📍 状态：运行中（PID: $TASK_PID）"
-      TASK_RUNNING=true
-    else
-      echo "📍 状态：已结束"
-    fi
+  if [[ -f "$DONE_FILE" ]]; then
+    # done.json 存在即视为已完成，无论 PID 是否仍存活
+    echo "📍 状态：已结束"
   else
-    echo "📍 状态：未启动或已结束"
+    TASK_PID=""
+    if [[ -f "$BG_PID_FILE" ]]; then
+      TASK_PID=$(cat "$BG_PID_FILE")
+    elif [[ -f "$STATE_DIR/lock.pid" ]]; then
+      TASK_PID=$(cat "$STATE_DIR/lock.pid")
+    fi
+
+    if [[ -n "$TASK_PID" ]]; then
+      if kill -0 "$TASK_PID" 2>/dev/null; then
+        echo "📍 状态：运行中（PID: $TASK_PID）"
+        TASK_RUNNING=true
+      else
+        echo "📍 状态：已结束"
+      fi
+    else
+      echo "📍 状态：未启动或已结束"
+    fi
   fi
 
   # 运行中才显示监控日志
@@ -191,7 +199,6 @@ if [[ "$CHECK_STATUS" == "true" ]]; then
   fi
 
   # 已结束才显示输出摘要（不重复显示监控+输出）
-  DONE_FILE="$STATE_DIR/${TASK_ID}_done.json"
   if [[ "$TASK_RUNNING" == "false" && -f "$DONE_FILE" ]]; then
     echo ""
     echo "📋 完成信息："
