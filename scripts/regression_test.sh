@@ -179,10 +179,17 @@ test_brief_validator_fail() {
 
 test_subscription_guard() {
   # 测试：subscription_guard --check 能正常返回
-  "$SCRIPT_DIR/subscription_guard.sh" --check >/dev/null 2>&1 || {
+  # 放宽配额限制，避免因历史调用记录导致误报
+  DEV_DELEGATE_MIN_INTERVAL=0 \
+  DEV_DELEGATE_MAX_CALLS_PER_HOUR=100 \
+  DEV_DELEGATE_MAX_CALLS_PER_DAY=500 \
+    "$SCRIPT_DIR/subscription_guard.sh" --check >/dev/null 2>&1 || {
     # 如果返回 1 可能是因为有并发锁，先清理
     "$SCRIPT_DIR/startup_check.sh" --cleanup >/dev/null 2>&1
-    "$SCRIPT_DIR/subscription_guard.sh" --check >/dev/null 2>&1
+    DEV_DELEGATE_MIN_INTERVAL=0 \
+    DEV_DELEGATE_MAX_CALLS_PER_HOUR=100 \
+    DEV_DELEGATE_MAX_CALLS_PER_DAY=500 \
+      "$SCRIPT_DIR/subscription_guard.sh" --check >/dev/null 2>&1
   }
 }
 
