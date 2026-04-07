@@ -1,10 +1,14 @@
 {
   "status": "running",
+  "task_id": "e2e_timeout_01",
+  "task_token": "e2e_timeout_01_1775526073_086f43b8",
+  "phase": "executing",
   "checks": [
     {
-      "time": "09:27:10",
-      "msg": "监控启动 | 项目: /tmp/dev-delegate-regression-2194088/e2e_timeout | 任务: e2e_timeout_01"
+      "time": "09:41:14",
+      "msg": "监控启动 | 项目: /tmp/dev-delegate-regression-2219912/e2e_timeout | 任务: e2e_timeout_01"
     }
   ],
-  "last_update": "2026-04-07T09:27:10+08:00"
+  "started_at": "2026-04-07T09:41:14+08:00",
+  "last_update": "2026-04-07T09:41:14+08:00"
 }

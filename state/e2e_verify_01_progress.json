@@ -1,10 +1,14 @@
 {
   "status": "running",
+  "task_id": "e2e_verify_01",
+  "task_token": "e2e_verify_01_1775526070_2b3a646a",
+  "phase": "executing",
   "checks": [
     {
-      "time": "09:27:07",
-      "msg": "监控启动 | 项目: /tmp/dev-delegate-regression-2194088/e2e_verify | 任务: e2e_verify_01"
+      "time": "09:41:11",
+      "msg": "监控启动 | 项目: /tmp/dev-delegate-regression-2219912/e2e_verify | 任务: e2e_verify_01"
     }
   ],
-  "last_update": "2026-04-07T09:27:07+08:00"
+  "started_at": "2026-04-07T09:41:11+08:00",
+  "last_update": "2026-04-07T09:41:11+08:00"
 }

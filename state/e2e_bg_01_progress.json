@@ -1,10 +1,14 @@
 {
   "status": "running",
+  "task_id": "e2e_bg_01",
+  "task_token": "e2e_bg_01_1775526068_92de0a54",
+  "phase": "executing",
   "checks": [
     {
-      "time": "09:27:04",
-      "msg": "监控启动 | 项目: /tmp/dev-delegate-regression-2194088/e2e_bg | 任务: e2e_bg_01"
+      "time": "09:41:09",
+      "msg": "监控启动 | 项目: /tmp/dev-delegate-regression-2219912/e2e_bg | 任务: e2e_bg_01"
     }
   ],
-  "last_update": "2026-04-07T09:27:04+08:00"
+  "started_at": "2026-04-07T09:41:09+08:00",
+  "last_update": "2026-04-07T09:41:09+08:00"
 }

@@ -1,17 +1,18 @@
 # 验证报告：e2e_verify_01
-**时间**：2026-04-07T09:27:08+08:00
-**项目**：/tmp/dev-delegate-regression-2194088/e2e_verify
+**时间**：2026-04-07T09:41:12+08:00
+**项目**：/tmp/dev-delegate-regression-2219912/e2e_verify
 
 ## 1. Claude Code 会话验证
   ✅ Claude Code 输出文件存在（260 bytes）
   ✅ Claude Code 调用成功，耗时 1s
 
 ## 2. Git 变更验证
-  ✅ 检测到 3 个文件变更
-  变更文件列表：
-    - .dev-delegate-status.md
+  ✅ 检测到 3 个文件变更（用户交付: 2, 辅助状态: 1）
+  📦 用户交付文件：
     - src/greet.py
     - src/main.py
+  🔧 技能辅助状态文件（非交付产物）：
+    - .dev-delegate-status.md
 
 ## 3. 文件存在性验证
   从 Claude Code 输出中提取的文件列表：
@@ -20,12 +21,12 @@
 
 ## 4. 最近修改的文件（30分钟内）
   ✅ 发现 6 个最近修改的文件
-    - src/main.py (09:27:08)
-    - src/greet.py (09:27:08)
-    - task_brief.md (09:27:06)
-    - README.md (09:27:06)
-    - .dev-delegate-status.md (09:27:08)
-    - tests/test_basic.py (09:27:06)
+    - src/main.py (09:41:12)
+    - src/greet.py (09:41:12)
+    - task_brief.md (09:41:10)
+    - README.md (09:41:10)
+    - .dev-delegate-status.md (09:41:12)
+    - tests/test_basic.py (09:41:10)
 
 ## 5. 测试验证
   检测到 Python 项目，尝试 pytest...
