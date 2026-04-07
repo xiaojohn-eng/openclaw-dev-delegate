@@ -428,12 +428,63 @@ test_status_log_fallback() {
   [[ "$status" == "COMPLETED" ]] || { echo "   状态为 $status (期望 COMPLETED)"; return 1; }
 }
 
+test_status_log_fallback_success_field() {
+  # 测试：call_log 中 exit_code 缺失但 success=true 时，应恢复为 COMPLETED
+  local test_tid="logfb_success_$$"
+  echo "{\"call_time\":\"$(date -Iseconds)\",\"task_id\":\"$test_tid\",\"task_token\":\"${test_tid}_tok\",\"duration_seconds\":5,\"success\":true,\"files_changed\":1,\"session_file\":\"test\",\"output_file\":\"test\",\"mode\":\"foreground\"}" >> "$STATE_DIR/call_log.jsonl"
+  rm -f "$STATE_DIR/${test_tid}_done.json" "$STATE_DIR/${test_tid}_bg.pid"
+
+  local output status
+  output=$("$SCRIPT_DIR/delegate_to_claude.sh" --status --task-id "$test_tid" --json 2>&1)
+  status=$(echo "$output" | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['status'])" 2>/dev/null)
+  [[ "$status" == "COMPLETED" ]] || { echo "   状态为 $status (期望 COMPLETED)"; return 1; }
+}
+
+test_status_active_task_fallback() {
+  # 测试：active_task.json 引用任务但无 done/calllog/pid → INTERRUPTED
+  local test_tid="activefb_test_$$"
+  # 写入 active_task.json（使用不存在的 PID）
+  echo "{\"task_id\":\"$test_tid\",\"task_token\":\"${test_tid}_tok\",\"started_at\":\"$(date -Iseconds)\",\"pid\":99998,\"task_brief\":\"test\",\"project_dir\":\"/tmp\"}" > "$STATE_DIR/active_task.json"
+  rm -f "$STATE_DIR/${test_tid}_done.json" "$STATE_DIR/${test_tid}_bg.pid"
+  # 确保 call_log 没有此任务记录
+  if [[ -f "$STATE_DIR/call_log.jsonl" ]]; then
+    grep -v "\"$test_tid\"" "$STATE_DIR/call_log.jsonl" > "$STATE_DIR/call_log.jsonl.tmp" || true
+    mv "$STATE_DIR/call_log.jsonl.tmp" "$STATE_DIR/call_log.jsonl"
+  fi
+
+  local output status
+  output=$("$SCRIPT_DIR/delegate_to_claude.sh" --status --task-id "$test_tid" --json 2>&1)
+  status=$(echo "$output" | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['status'])" 2>/dev/null)
+  [[ "$status" == "INTERRUPTED" ]] || { echo "   状态为 $status (期望 INTERRUPTED)"; return 1; }
+}
+
+test_status_output_file_fallback() {
+  # 测试：仅有 output 文件存在时，应恢复为 INTERRUPTED（非 UNKNOWN）
+  local test_tid="outfb_test_$$"
+  echo "some output" > "$STATE_DIR/${test_tid}_output.txt"
+  rm -f "$STATE_DIR/${test_tid}_done.json" "$STATE_DIR/${test_tid}_bg.pid" "$STATE_DIR/${test_tid}_progress.json"
+  # 清理 active_task 和 call_log 中的痕迹
+  echo "{}" > "$STATE_DIR/active_task.json"
+  if [[ -f "$STATE_DIR/call_log.jsonl" ]]; then
+    grep -v "\"$test_tid\"" "$STATE_DIR/call_log.jsonl" > "$STATE_DIR/call_log.jsonl.tmp" || true
+    mv "$STATE_DIR/call_log.jsonl.tmp" "$STATE_DIR/call_log.jsonl"
+  fi
+
+  local output status
+  output=$("$SCRIPT_DIR/delegate_to_claude.sh" --status --task-id "$test_tid" --json 2>&1)
+  status=$(echo "$output" | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['status'])" 2>/dev/null)
+  [[ "$status" == "INTERRUPTED" ]] || { echo "   状态为 $status (期望 INTERRUPTED)"; return 1; }
+
+  # 清理
+  rm -f "$STATE_DIR/${test_tid}_output.txt"
+}
+
 # ═══════════════════════════════════════
 #  执行
 # ═══════════════════════════════════════
 
 echo "╔═══════════════════════════════════════╗"
-echo "║   dev-delegate 回归测试 v1.3          ║"
+echo "║   dev-delegate 回归测试 v1.4          ║"
 echo "║   $(date '+%Y-%m-%d %H:%M:%S')                  ║"
 echo "╚═══════════════════════════════════════╝"
 
@@ -459,6 +510,9 @@ run_test "startup_json"        "启动自检 JSON 输出有效"      test_startu
 run_test "state_cleanup"       "状态清理 dry-run 正常"       test_state_cleanup
 run_test "state_cleanup_json"  "状态清理 JSON 输出有效"      test_state_cleanup_json
 run_test "status_log_fallback" "状态从 call_log 恢复"        test_status_log_fallback
+run_test "status_log_success" "call_log success 字段恢复"    test_status_log_fallback_success_field
+run_test "status_active_fb"   "active_task 中断恢复"         test_status_active_task_fallback
+run_test "status_output_fb"   "output 文件存在性恢复"        test_status_output_file_fallback
 
 # ═══════════════════════════════════════
 #  全链路集成测试（使用 mock claude）

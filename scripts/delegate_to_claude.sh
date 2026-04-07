@@ -269,7 +269,7 @@ else:
       TASK_STATUS="INTERRUPTED"
     fi
 
-    # ─── Fallback: 从 call_log.jsonl 恢复历史任务状态（减少 UNKNOWN） ───
+    # ─── Fallback 1: 从 call_log.jsonl 恢复历史任务状态 ───
     if [[ "$TASK_STATUS" == "UNKNOWN" && -f "$CALL_LOG" ]]; then
       LOG_ENTRY=$(grep "\"$TASK_ID\"" "$CALL_LOG" 2>/dev/null | tail -1 || true)
       if [[ -n "$LOG_ENTRY" ]]; then
@@ -282,9 +282,59 @@ else:
           0)       TASK_STATUS="COMPLETED" ;;
           124)     TASK_STATUS="TIMEOUT" ;;
           137|143) TASK_STATUS="INTERRUPTED" ;;
-          "?"|"")  TASK_STATUS="UNKNOWN" ;;
+          "?"|"")
+            # exit_code 缺失时，尝试从 success 字段恢复
+            LOG_SUCCESS=$(echo "$LOG_ENTRY" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('success',''))" 2>/dev/null || echo "")
+            case "$LOG_SUCCESS" in
+              True|true)   TASK_STATUS="COMPLETED" ;;
+              False|false) TASK_STATUS="FAILED" ;;
+              *)           TASK_STATUS="UNKNOWN" ;;
+            esac
+            ;;
           *)       TASK_STATUS="FAILED" ;;
         esac
+      fi
+    fi
+
+    # ─── Fallback 2: 从 active_task.json 恢复（任务曾启动但无完成记录） ───
+    if [[ "$TASK_STATUS" == "UNKNOWN" && -f "$ACTIVE_FILE" ]]; then
+      ACTIVE_MATCH=$(python3 -c "
+import json,sys
+d=json.loads(sys.stdin.read())
+if d.get('task_id','') == sys.argv[1]:
+    print('match')
+else:
+    print('')
+" "$TASK_ID" < "$ACTIVE_FILE" 2>/dev/null || true)
+      if [[ "$ACTIVE_MATCH" == "match" ]]; then
+        # active_task 引用了此任务但没有 done.json/call_log → 异常中断
+        ACTIVE_PID=$(python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('pid',''))" < "$ACTIVE_FILE" 2>/dev/null || true)
+        if [[ -n "$ACTIVE_PID" ]] && kill -0 "$ACTIVE_PID" 2>/dev/null; then
+          TASK_STATUS="RUNNING"
+          TASK_PID="$ACTIVE_PID"
+        else
+          TASK_STATUS="INTERRUPTED"
+          [[ -z "$TASK_TOKEN_VAL" ]] && TASK_TOKEN_VAL=$(python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('task_token',''))" < "$ACTIVE_FILE" 2>/dev/null || true)
+        fi
+      fi
+    fi
+
+    # ─── Fallback 3: 从 progress/output/monitor 文件存在性推断 ───
+    if [[ "$TASK_STATUS" == "UNKNOWN" ]]; then
+      # 如果存在任务相关的状态文件（output/progress/monitor），说明任务曾运行过
+      if [[ -f "$OUTPUT_FILE" || -f "$PROGRESS_FILE" || -f "$MONITOR_LOG" ]]; then
+        # 检查 progress 心跳是否极度过期（超过 1 小时视为中断）
+        if [[ -n "$TASK_HEARTBEAT" ]]; then
+          HB_EPOCH=$(date -d "$TASK_HEARTBEAT" +%s 2>/dev/null || echo 0)
+          NOW_EPOCH=$(date +%s)
+          HB_AGE=$(( NOW_EPOCH - HB_EPOCH ))
+          if [[ $HB_AGE -gt 3600 ]]; then
+            TASK_STATUS="INTERRUPTED"
+          fi
+        else
+          # 无心跳但有文件痕迹 → 中断
+          TASK_STATUS="INTERRUPTED"
+        fi
       fi
     fi
   fi
