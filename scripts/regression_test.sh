@@ -344,6 +344,7 @@ test_help_flags() {
     task_brief_validator.sh
     subscription_guard.sh
     selfcheck.sh
+    state_cleanup.sh
   )
   local failed=0
   for script in "${scripts[@]}"; do
@@ -396,12 +397,43 @@ test_startup_json() {
   echo "$output" | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'summary' in d and 'tasks' in d" 2>/dev/null
 }
 
+test_state_cleanup() {
+  # 测试：state_cleanup.sh dry-run 正常运行
+  local output
+  output=$("$SCRIPT_DIR/state_cleanup.sh" 2>&1)
+  echo "$output" | grep -q "状态清理"
+}
+
+test_state_cleanup_json() {
+  # 测试：state_cleanup.sh --json 输出合法 JSON
+  local output
+  output=$("$SCRIPT_DIR/state_cleanup.sh" --json 2>&1)
+  echo "$output" | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'cleaned_files' in d and 'dry_run' in d" 2>/dev/null
+}
+
+test_status_log_fallback() {
+  # 测试：当 done.json 不存在但 call_log 有记录时，状态不应为 UNKNOWN
+  local test_tid="logfallback_test_$$"
+  # 写入一条 call_log 记录
+  echo "{\"call_time\":\"$(date -Iseconds)\",\"task_id\":\"$test_tid\",\"task_token\":\"${test_tid}_tok\",\"duration_seconds\":10,\"exit_code\":0,\"success\":true,\"files_changed\":3,\"session_file\":\"test\",\"output_file\":\"test\",\"mode\":\"foreground\"}" >> "$STATE_DIR/call_log.jsonl"
+
+  # 确保没有 done.json 和 pid 文件
+  rm -f "$STATE_DIR/${test_tid}_done.json" "$STATE_DIR/${test_tid}_bg.pid"
+
+  # 查询状态
+  local output
+  output=$("$SCRIPT_DIR/delegate_to_claude.sh" --status --task-id "$test_tid" --json 2>&1)
+  local status
+  status=$(echo "$output" | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['status'])" 2>/dev/null)
+  [[ "$status" == "COMPLETED" ]] || { echo "   状态为 $status (期望 COMPLETED)"; return 1; }
+}
+
 # ═══════════════════════════════════════
 #  执行
 # ═══════════════════════════════════════
 
 echo "╔═══════════════════════════════════════╗"
-echo "║   dev-delegate 回归测试 v1.2          ║"
+echo "║   dev-delegate 回归测试 v1.3          ║"
 echo "║   $(date '+%Y-%m-%d %H:%M:%S')                  ║"
 echo "╚═══════════════════════════════════════╝"
 
@@ -424,6 +456,9 @@ run_test "selfcheck"           "版本/依赖自检正常"           test_selfch
 run_test "selfcheck_json"      "自检 JSON 输出有效"          test_selfcheck_json
 run_test "status_json"         "状态查询 JSON 输出有效"      test_status_json
 run_test "startup_json"        "启动自检 JSON 输出有效"      test_startup_json
+run_test "state_cleanup"       "状态清理 dry-run 正常"       test_state_cleanup
+run_test "state_cleanup_json"  "状态清理 JSON 输出有效"      test_state_cleanup_json
+run_test "status_log_fallback" "状态从 call_log 恢复"        test_status_log_fallback
 
 # ═══════════════════════════════════════
 #  全链路集成测试（使用 mock claude）

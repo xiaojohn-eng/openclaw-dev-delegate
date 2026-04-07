@@ -1,8 +1,0 @@
-LISTEN 0      10         127.0.0.1:9222       0.0.0.0:*    users:(("chrome",pid=1009550,fd=72))                   
-LISTEN 0      4096      127.0.0.54:53         0.0.0.0:*    users:(("systemd-resolve",pid=664,fd=17))              
-LISTEN 0      511        127.0.0.1:35355      0.0.0.0:*    users:(("openclaw-gatewa",pid=1631526,fd=25))          
-LISTEN 0      511        127.0.0.1:35357      0.0.0.0:*    users:(("openclaw-gatewa",pid=1631526,fd=36))          
-LISTEN 0      4096         0.0.0.0:22         0.0.0.0:*    users:(("sshd",pid=1185,fd=3),("systemd",pid=1,fd=207))
-LISTEN 0      4096   127.0.0.53%lo:53         0.0.0.0:*    users:(("systemd-resolve",pid=664,fd=15))              
-LISTEN 0      511            [::1]:35355         [::]:*    users:(("openclaw-gatewa",pid=1631526,fd=26))          
-LISTEN 0      4096            [::]:22            [::]:*    users:(("sshd",pid=1185,fd=4),("systemd",pid=1,fd=208))

@@ -1,9 +1,0 @@
-=== 修改文件清单 ===
-[新增] src/greet.py — greet 函数实现
-[修改] src/main.py — 导入 greet 模块
-
-=== 测试结果 ===
-手动验证：python3 -c "from src.greet import greet; print(greet('test'))" → Hello, test!
-
-=== 遗留问题 ===
-无

@@ -1,2 +1,0 @@
-bin: /tmp/dev_delegate_repo/scripts/mock_claude.sh
-args: -p --output-format text --permission-mode auto --allowedTools Read,Write,Edit,Bash,Grep,Glob --add-dir /tmp/dev-delegate-regression-2219912/e2e_bg

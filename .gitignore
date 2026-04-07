@@ -1,0 +1,19 @@
+# dev-delegate runtime state (auto-generated, per-machine)
+state/
+
+# Project status files (written per-project by delegate_to_claude.sh)
+.dev-delegate-status.md
+
+# OS / editor artifacts
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Node
+node_modules/

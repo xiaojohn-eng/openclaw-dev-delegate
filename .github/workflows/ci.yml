@@ -1,0 +1,32 @@
+name: dev-delegate CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Claude Code CLI (mock for CI)
+        run: |
+          # CI 环境无真实 Claude CLI，回归测试使用 mock_claude.sh
+          # 创建 stub claude 命令供 selfcheck 等检测
+          sudo bash -c 'echo "#!/bin/bash
+          echo \"1.0.0-ci-stub\"" > /usr/local/bin/claude'
+          sudo chmod +x /usr/local/bin/claude
+
+      - name: Run selfcheck
+        run: ./scripts/selfcheck.sh
+
+      - name: Run regression tests
+        run: ./scripts/regression_test.sh

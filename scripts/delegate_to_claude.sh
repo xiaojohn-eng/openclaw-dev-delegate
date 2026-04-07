@@ -268,6 +268,25 @@ else:
     elif [[ -n "$TASK_PID" ]]; then
       TASK_STATUS="INTERRUPTED"
     fi
+
+    # ─── Fallback: 从 call_log.jsonl 恢复历史任务状态（减少 UNKNOWN） ───
+    if [[ "$TASK_STATUS" == "UNKNOWN" && -f "$CALL_LOG" ]]; then
+      LOG_ENTRY=$(grep "\"$TASK_ID\"" "$CALL_LOG" 2>/dev/null | tail -1 || true)
+      if [[ -n "$LOG_ENTRY" ]]; then
+        TASK_EXIT_CODE=$(echo "$LOG_ENTRY" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('exit_code','?'))" 2>/dev/null || echo "?")
+        TASK_DURATION=$(echo "$LOG_ENTRY" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('duration_seconds','?'))" 2>/dev/null || echo "?")
+        TASK_FILES_CHANGED=$(echo "$LOG_ENTRY" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('files_changed','?'))" 2>/dev/null || echo "?")
+        TASK_TOKEN_VAL=$(echo "$LOG_ENTRY" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('task_token',''))" 2>/dev/null || echo "")
+
+        case "$TASK_EXIT_CODE" in
+          0)       TASK_STATUS="COMPLETED" ;;
+          124)     TASK_STATUS="TIMEOUT" ;;
+          137|143) TASK_STATUS="INTERRUPTED" ;;
+          "?"|"")  TASK_STATUS="UNKNOWN" ;;
+          *)       TASK_STATUS="FAILED" ;;
+        esac
+      fi
+    fi
   fi
 
   # ─── JSON 输出模式 ───

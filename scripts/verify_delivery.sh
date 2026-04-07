@@ -142,10 +142,33 @@ validate_test_cmd() {
 exec 3>&1 4>&2
 exec > >(tee "$REPORT_FILE") 2>&1
 
+# ─── 读取 task_token ───
+TASK_TOKEN_VAL=""
+DONE_FILE="$STATE_DIR/${TASK_ID}_done.json"
+if [[ -f "$DONE_FILE" ]]; then
+  TASK_TOKEN_VAL=$(python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('task_token',''))" < "$DONE_FILE" 2>/dev/null || true)
+fi
+if [[ -z "$TASK_TOKEN_VAL" && -f "$STATE_DIR/active_task.json" ]]; then
+  TASK_TOKEN_VAL=$(python3 -c "
+import json,sys
+d=json.loads(sys.stdin.read())
+if d.get('task_id','') == sys.argv[1]:
+    print(d.get('task_token',''))
+else:
+    print('')
+" "$TASK_ID" < "$STATE_DIR/active_task.json" 2>/dev/null || true)
+fi
+
 echo "# 验证报告：${TASK_ID}"
 echo "**时间**：$(date -Iseconds)"
 echo "**项目**：${PROJECT_DIR}"
+echo "**task_id**：${TASK_ID}"
+echo "**task_token**：${TASK_TOKEN_VAL:-N/A}"
 echo ""
+
+# 收集分类文件列表（在汇总时输出）
+_USER_ARTIFACTS=""
+_INTERNAL_ARTIFACTS=""
 
 # ─── 检查 1：Claude Code 会话是否真实存在 ───
 echo "## 1. Claude Code 会话验证"
@@ -214,10 +237,12 @@ if command -v git &>/dev/null && git rev-parse --is-inside-work-tree &>/dev/null
     if [[ $USER_COUNT -gt 0 ]]; then
       echo "  📦 用户交付文件："
       echo "$USER_FILES" | sed '/^$/d' | sed 's/^/    - /'
+      _USER_ARTIFACTS=$(echo "$USER_FILES" | sed '/^$/d')
     fi
     if [[ $INTERNAL_COUNT -gt 0 ]]; then
       echo "  🔧 技能辅助状态文件（非交付产物）："
       echo "$INTERNAL_FILES" | sed '/^$/d' | sed 's/^/    - /'
+      _INTERNAL_ARTIFACTS=$(echo "$INTERNAL_FILES" | sed '/^$/d')
     fi
   else
     log_warn "未检测到 git 变更（可能已被提交或无实际改动）"
@@ -449,11 +474,39 @@ echo "| ❌ 失败 | $FAIL_COUNT |"
 echo "| ⚠️  警告 | $WARN_COUNT |"
 echo ""
 
+FINAL_VERDICT=$( [[ $FAIL_COUNT -eq 0 ]] && echo "PASS" || echo "FAIL" )
+
+echo "## 结构化归档字段"
+echo ""
+echo "| 字段 | 值 |"
+echo "|------|-----|"
+echo "| task_id | ${TASK_ID} |"
+echo "| task_token | ${TASK_TOKEN_VAL:-N/A} |"
+echo "| final_verdict | ${FINAL_VERDICT} |"
+echo "| pass_count | ${PASS_COUNT} |"
+echo "| fail_count | ${FAIL_COUNT} |"
+echo "| warn_count | ${WARN_COUNT} |"
+echo "| verified_at | $(date -Iseconds) |"
+
+if [[ -n "$_USER_ARTIFACTS" ]]; then
+  echo ""
+  echo "### user_artifacts"
+  echo "$_USER_ARTIFACTS" | sed 's/^/- /'
+fi
+
+if [[ -n "$_INTERNAL_ARTIFACTS" ]]; then
+  echo ""
+  echo "### internal_artifacts"
+  echo "$_INTERNAL_ARTIFACTS" | sed 's/^/- /'
+fi
+
+echo ""
+
 if [[ $FAIL_COUNT -eq 0 ]]; then
-  echo "### 🟢 验证结论：通过"
+  echo "### 🟢 验证结论：通过（${FINAL_VERDICT}）"
   echo "所有关键检查项通过，可以向用户汇报完成。"
 else
-  echo "### 🔴 验证结论：未通过"
+  echo "### 🔴 验证结论：未通过（${FINAL_VERDICT}）"
   echo "有 $FAIL_COUNT 项关键检查失败，**不得声称任务完成**。"
   echo ""
   echo "### 失败反馈（供重新调用 Claude Code 时使用）"

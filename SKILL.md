@@ -1,7 +1,7 @@
 ---
 name: dev-delegate
 description: 开发委托技能 — OpenClaw 调用 Claude Code 开发时的职责分离、防幻觉、防打断、证据链验证
-version: 2.1.0
+version: 2.2.0
 triggers:
   - 调用 claude code
   - 用 claude code 做
@@ -16,7 +16,7 @@ triggers:
 
 # dev-delegate — 开发委托技能
 
-> **版本**：2.1.0
+> **版本**：2.2.0
 > **作者**：军哥 + Claude Code
 > **创建日期**：2026-04-06
 > **更新日期**：2026-04-07
@@ -372,14 +372,102 @@ OpenClaw 下次进入同一项目时，应先读取此文件了解上下文，
 
 ---
 
+## 结构化输出与 JSON 模式
+
+多个脚本支持 `--json` 标志输出机器可读 JSON，便于程序化集成：
+
+```bash
+# 任务状态查询（结构化）
+delegate_to_claude.sh --status --task-id ID --json
+# → {"task_id":"...", "status":"COMPLETED|RUNNING|FAILED|TIMEOUT|INTERRUPTED|UNKNOWN", ...}
+
+# 版本与依赖自检
+selfcheck.sh --json
+# → {"ok":true, "checks":[...], "summary":{"pass":N,"fail":N,"warn":N}}
+
+# 启动自检
+startup_check.sh --json
+# → {"summary":{"running":0,"completed_unreported":0,...}, "tasks":[...]}
+
+# 状态目录清理
+state_cleanup.sh --json
+# → {"cleaned_files":N, "cleaned_bytes":N, ...}
+```
+
+### 状态枚举
+
+`--status --json` 返回的 `status` 字段使用以下枚举值：
+
+| 状态 | 含义 | 来源 |
+|------|------|------|
+| `RUNNING` | 任务进程仍在执行 | PID 存活检测 |
+| `COMPLETED` | 正常完成（exit_code=0） | done.json 或 call_log |
+| `FAILED` | 异常退出 | done.json 或 call_log |
+| `TIMEOUT` | 执行超时（exit_code=124） | done.json 或 call_log |
+| `INTERRUPTED` | 进程被终止 | PID 已死但有记录 |
+| `UNKNOWN` | 无任何状态信息 | 无 done.json、无 PID、无日志 |
+
+v2.2.0 新增：当 `done.json` 和 PID 均不存在时，自动从 `call_log.jsonl` 恢复历史状态，大幅减少 `UNKNOWN`。
+
+---
+
+## 验证报告结构化字段
+
+`verify_delivery.sh` 生成的报告包含以下标准化字段，便于归档和自动化处理：
+
+| 字段 | 说明 |
+|------|------|
+| `task_id` | 任务唯一标识 |
+| `task_token` | 本次调用的唯一令牌（task_id + 时间戳 + 随机数） |
+| `final_verdict` | `PASS` 或 `FAIL` |
+| `pass_count` | 通过的检查项数 |
+| `fail_count` | 失败的检查项数 |
+| `warn_count` | 警告的检查项数 |
+| `verified_at` | 验证执行时间（ISO 8601） |
+| `user_artifacts` | 用户交付文件列表 |
+| `internal_artifacts` | 技能内部状态文件列表 |
+
+---
+
+## 状态目录管理（state_cleanup.sh）
+
+`state/` 目录存放运行时产物，长期使用后可能膨胀。`state_cleanup.sh` 提供安全的清理/归档能力：
+
+```bash
+# 预览可清理的文件（dry-run，默认）
+state_cleanup.sh
+
+# 实际执行清理（删除 30 天前的过期文件）
+state_cleanup.sh --execute
+
+# 归档后清理（先打包到 state/archive/ 再删除）
+state_cleanup.sh --archive
+
+# 自定义保留天数
+state_cleanup.sh --execute --max-age 7
+
+# JSON 格式报告
+state_cleanup.sh --json
+```
+
+保护规则：
+- 永不删除 `active_task.json`、`call_log.jsonl`、`.cli_caps_cache`
+- 不删除运行中任务的关联文件
+- `call_log.jsonl` 仅截断（保留最近 500 条），不删除
+
+---
+
 ## 文件结构
 
 ```
 ~/.openclaw/skills/dev-delegate/
 ├── SKILL.md                       # 本文件
+├── README.md                      # 快速上手指南
+├── CHANGELOG.md                   # 版本变更记录
+├── .gitignore                     # 排除 state/ 和临时产物
 ├── scripts/
-│   ├── delegate_to_claude.sh      # 标准化 Claude Code 调用（前台/后台）
-│   ├── verify_delivery.sh         # 产出验证（含自动验收+环境对比+失败反馈）
+│   ├── delegate_to_claude.sh      # 标准化 Claude Code 调用（前台/后台/--json）
+│   ├── verify_delivery.sh         # 产出验证（含结构化归档字段+失败反馈）
 │   ├── task_brief_validator.sh    # 任务简报质量校验
 │   ├── subscription_guard.sh      # 订阅配额保护
 │   ├── monitor_claude.sh          # 实时进度监控
@@ -387,13 +475,19 @@ OpenClaw 下次进入同一项目时，应先读取此文件了解上下文，
 │   ├── progress_report.sh         # 证据链汇报生成
 │   ├── env_snapshot.sh            # 环境快照对比
 │   ├── crash_recover.sh           # 崩溃断点续接
-│   ├── startup_check.sh           # OpenClaw 启动自检
-│   └── regression_test.sh         # 回归测试（11 个场景）
+│   ├── startup_check.sh           # OpenClaw 启动自检（--json）
+│   ├── selfcheck.sh               # 版本/依赖自检（--json）
+│   ├── state_cleanup.sh           # 状态目录清理与归档
+│   ├── mock_claude.sh             # 测试用 mock CLI
+│   └── regression_test.sh         # 回归测试（20 个场景）
 ├── templates/
 │   ├── task_brief.md              # 任务简报模板（含自动验收命令）
 │   ├── phase_report.md            # 阶段汇报模板
 │   └── handoff.md                 # 子任务交接模板
-└── state/                         # 运行时状态（自动管理）
+├── .github/
+│   └── workflows/
+│       └── ci.yml                 # GitHub Actions 回归测试
+└── state/                         # 运行时状态（自动管理，.gitignore 排除）
     ├── active_task.json           # 当前活跃任务
     ├── call_log.jsonl             # 调用日志
     └── lock.pid                   # 任务锁文件
