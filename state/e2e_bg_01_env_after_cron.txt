@@ -1,0 +1,15 @@
+*/5 * * * * flock -xn /tmp/stargate.lock -c '/usr/local/qcloud/stargate/admin/start.sh > /dev/null 2>&1 &'
+
+
+
+# 天工情报雷达 - 每天08:00自动采集发送
+0 8 * * * node --env-file=/root/tgqb/.env /root/tgqb/dist/run-once.js >> /root/tgqb/data/radar.log 2>&1
+# 天工日报同步到IMA知识库（日报跑完后30分钟执行）
+30 8 * * * /bin/bash /root/tgqb/sync_to_ima.sh
+# 周报自动化流水线
+# 1. 周六 10:00 自动催交周报
+0 10 * * 6 WEEKLY_IMAP_PASS=oBjGd864UsCJRkS2 /usr/bin/python3 /root/.openclaw/skills/weekly-report-digest/scripts/auto_reminder.py >> /root/.openclaw/memory-weekly/reminder.log 2>&1
+# 2. 周日 09:00 生成 CEO 智能简报
+0 9 * * 0 WEEKLY_IMAP_PASS=oBjGd864UsCJRkS2 /usr/bin/python3 /root/.openclaw/skills/weekly-report-digest/scripts/ceo_briefing.py --week this --to shaw@tgkwrobot.com >> /root/.openclaw/memory-weekly/ceo_briefing.log 2>&1
+# 3. 每2小时检查 CEO 邮件回复（工作时间）
+0 9-21/2 * * * WEEKLY_IMAP_PASS=oBjGd864UsCJRkS2 /usr/bin/python3 /root/.openclaw/skills/weekly-report-digest/scripts/ceo_reply_monitor.py >> /root/.openclaw/memory-weekly/reply_monitor.log 2>&1

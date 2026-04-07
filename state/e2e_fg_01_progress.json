@@ -1,0 +1,10 @@
+{
+  "status": "running",
+  "checks": [
+    {
+      "time": "09:12:40",
+      "msg": "监控启动 | 项目: /tmp/dev-delegate-regression-2070869/e2e_fg | 任务: e2e_fg_01"
+    }
+  ],
+  "last_update": "2026-04-07T09:12:40+08:00"
+}
